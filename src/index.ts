@@ -105,8 +105,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
   try {
     const meta = JSON.parse(view.private_metadata || "{}");
     const channel_id = meta.channel_id as string;
-    thead_ts: // NOOP to keep pasting simple
-    0;
     const thread_ts = meta.thread_ts as string;
     const category = (view.state.values.category_block.category_action.selected_option?.value || "other") as string;
 
@@ -328,10 +326,10 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     return;
   }
 
-  // Step 5: complete upload (share directly to thread, include mime_type)
+  // Step 5: complete upload (share directly to thread)
   await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 5/6: Finalizing upload…" });
   const done = (await client.apiCall("files.completeUploadExternal", {
-    files: [{ id: file_id, title: filename, mime_type: "application/pdf" }],
+    files: [{ id: file_id, title: filename }],
     channel_id: channel_id,
     initial_comment: `📄 Print-optimized PDF ready (${imgs.length} photos).`,
     thread_ts: root_ts
