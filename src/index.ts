@@ -1,6 +1,7 @@
 import express from "express";
 import crypto from "crypto";
 import { App, ExpressReceiver } from "@slack/bolt";
+import fetch from "node-fetch";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 /**
@@ -24,7 +25,6 @@ const bolt = new App({
 
 type Pair = { caption: string; fileId: string; mimetype: string };
 
-// ---------- Helpers ----------
 function verifySlackSig(req: express.Request): boolean {
   const ts = req.headers["x-slack-request-timestamp"] as string;
   const sig = req.headers["x-slack-signature"] as string;
@@ -64,7 +64,7 @@ app.post("/slack/commands", async (req, res) => {
   });
 });
 
-// ========== SHORTCUT A: Collate to Canvas (kept as-is) ==========
+// ========== SHORTCUT A: Collate to Canvas (kept) ==========
 bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
   await ack();
   try {
@@ -119,7 +119,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       (view.state.values.category_block.category_action.selected_option?.value ||
         "other") as string;
 
-    // get replies
     const replies = await client.conversations.replies({
       channel: channel_id,
       ts: thread_ts,
@@ -127,7 +126,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     });
     const messages = replies.messages || [];
 
-    // gather pairs
     const pairs: { caption: string; permalink: string }[] = [];
     for (const m of messages) {
       const files = (m as any).files as Array<any> | undefined;
@@ -156,7 +154,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    // build markdown (Description -> Image)
     const lines: string[] = [];
     lines.push(`# Collated — ${category}`);
     lines.push("");
@@ -172,7 +169,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     }
     const markdown = lines.join("\n");
 
-    // create canvas attached to channel
     const created = (await client.apiCall("canvases.create", {
       title: `Collated — ${category}`,
       channel_id: channel_id,
@@ -216,7 +212,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
     });
     const messages = replies.messages || [];
 
-    // 2) collect pairs, keeping file IDs & mimetypes for binary download
+    // 2) collect pairs with file ids
     const pairs: Pair[] = [];
     for (const m of messages) {
       const files = (m as any).files as Array<any> | undefined;
@@ -242,48 +238,56 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
       return;
     }
 
-    // 3) Download image binaries via url_private using bot token
+    // 3) robust download with detailed logging
     async function downloadBuffer(fileId: string): Promise<Uint8Array | null> {
-      const info = (await client.apiCall("files.info", { file: fileId })) as any;
-      const url = info.file?.url_private_download || info.file?.url_private;
-      if (!url) return null;
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${botToken}` }
-      });
-      if (!res.ok) return null;
-      const ab = await res.arrayBuffer();
-      return new Uint8Array(ab);
+      try {
+        const info = (await client.apiCall("files.info", { file: fileId })) as any;
+        const url = info.file?.url_private_download || info.file?.url_private;
+        if (!url) {
+          (logger || console).error("download: missing url_private*", { fileId });
+          return null;
+        }
+        const res = await fetch(url, {
+          headers: { Authorization: `Bearer ${botToken}` }
+        } as any);
+        if (!res.ok) {
+          (logger || console).error("download: bad status", {
+            fileId,
+            status: (res as any).status,
+            statusText: (res as any).statusText
+          });
+          return null;
+        }
+        const ab = await res.arrayBuffer();
+        return new Uint8Array(ab);
+      } catch (err: any) {
+        (logger || console).error("download: fetch error", err?.message || err);
+        return null;
+      }
     }
 
-    // 4) Build a 2-column Letter PDF (portrait) with consistent sizing
+    // 4) Build 2-column Letter PDF
     const pdf = await PDFDocument.create();
     const font = await pdf.embedFont(StandardFonts.Helvetica);
-    const pageW = 612; // 8.5in * 72
-    const pageH = 792; // 11in * 72
-    const margin = 36; // 0.5in
-    const gutter = 18; // space between columns
+    const pageW = 612, pageH = 792, margin = 36, gutter = 18;
     const colW = (pageW - margin * 2 - gutter) / 2;
 
-    // Box heights
     const captionSize = 10;
     const lineHeight = captionSize + 2;
-    const maxCaptionLines = 6; // cap to keep things tight
+    const maxCaptionLines = 6;
     const captionBlockH = maxCaptionLines * lineHeight + 6;
-    const imageMaxH = 220; // tweak as needed for density
+    const imageMaxH = 220;
     const cellH = captionBlockH + imageMaxH + 12;
 
-    // Header
-    const title = "Print Export";
     function addPage() {
       const p = pdf.addPage([pageW, pageH]);
-      p.drawText(title, { x: margin, y: pageH - margin + 6, size: 12, font, color: rgb(0, 0, 0) });
+      p.drawText("Print Export", { x: margin, y: pageH - margin + 6, size: 12, font, color: rgb(0,0,0) });
       return p;
     }
     let page = addPage();
-    let curY = pageH - margin - 18; // start below header
-    let col = 0; // 0 left, 1 right
+    let curY = pageH - margin - 18;
+    let col = 0;
 
-    // simple text wrap by measuring width
     function wrapText(text: string, maxWidth: number, maxLines: number): string[] {
       const words = text.replace(/\r/g, "").split(/\s+/);
       const lines: string[] = [];
@@ -303,7 +307,6 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
     }
 
     for (const p of pairs) {
-      // new row if needed
       const x = margin + (col === 0 ? 0 : colW + gutter);
       if (curY - cellH < margin) {
         page = addPage();
@@ -311,12 +314,11 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
         col = 0;
       }
 
-      // caption first (as requested)
-      const caption = p.caption || "";
-      const wrapped = wrapText(caption, colW, maxCaptionLines);
+      // caption
+      const wrapped = wrapText(p.caption || "", colW, maxCaptionLines);
       let textY = curY - lineHeight;
       for (const line of wrapped) {
-        page.drawText(line, { x, y: textY, size: captionSize, font, color: rgb(0, 0, 0) });
+        page.drawText(line, { x, y: textY, size: captionSize, font, color: rgb(0,0,0) });
         textY -= lineHeight;
       }
       const afterCaptionY = textY - 6;
@@ -324,57 +326,28 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
       // image
       const buf = await downloadBuffer(p.fileId);
       if (buf) {
-        // try JPEG then PNG
         let img: any = null;
-        try {
-          img = await pdf.embedJpg(buf);
-        } catch {
-          try {
-            img = await pdf.embedPng(buf);
-          } catch {
-            img = null;
-          }
-        }
+        try { img = await pdf.embedJpg(buf); } catch {}
+        if (!img) { try { img = await pdf.embedPng(buf); } catch {} }
         if (img) {
-          const iw = img.width;
-          const ih = img.height;
+          const iw = img.width, ih = img.height;
           const scale = Math.min(colW / iw, imageMaxH / ih);
-          const w = iw * scale;
-          const h = ih * scale;
+          const w = iw * scale, h = ih * scale;
           page.drawImage(img, { x, y: afterCaptionY - h, width: w, height: h });
         } else {
-          // fallback text if format not supported (e.g., HEIC)
-          page.drawText("[unsupported image format]", {
-            x,
-            y: afterCaptionY - lineHeight,
-            size: captionSize,
-            font,
-            color: rgb(0.4, 0, 0)
-          });
+          page.drawText("[unsupported image format]", { x, y: afterCaptionY - lineHeight, size: captionSize, font, color: rgb(0.4,0,0) });
         }
       } else {
-        page.drawText("[failed to download image]", {
-          x,
-          y: afterCaptionY - lineHeight,
-          size: captionSize,
-          font,
-          color: rgb(0.4, 0, 0)
-        });
+        page.drawText("[failed to download image]", { x, y: afterCaptionY - lineHeight, size: captionSize, font, color: rgb(0.4,0,0) });
       }
 
-      // advance column / row
-      if (col === 0) {
-        col = 1;
-      } else {
-        col = 0;
-        curY = afterCaptionY - imageMaxH - 12; // next row
-      }
+      if (col === 0) col = 1; else { col = 0; curY = afterCaptionY - imageMaxH - 12; }
     }
 
     const pdfBytes = await pdf.save();
     const filename = `PrintExport_${new Date().toISOString().slice(0, 10)}.pdf`;
 
-    // 5) Upload using Slack's new external upload flow
+    // 5) Upload using new external upload flow
     const up = (await client.apiCall("files.getUploadURLExternal", {
       filename,
       length: pdfBytes.length
@@ -382,40 +355,30 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
 
     if (!up?.ok) {
       (logger || console).error("getUploadURLExternal failed:", up);
-      await client.chat.postMessage({
-        channel: channel_id,
-        thread_ts: root_ts,
-        text: "⚠️ PDF upload init failed."
-      });
+      await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "⚠️ PDF upload init failed." });
       return;
     }
 
     const upload_url = up.upload_url as string;
     const file_id = up.file_id as string;
 
-    // PUT to upload_url
     const putRes = await fetch(upload_url, {
       method: "PUT",
       headers: { "Content-Type": "application/octet-stream" },
       body: Buffer.from(pdfBytes)
     } as any);
     if (!(putRes as any).ok) {
-      await client.chat.postMessage({
-        channel: channel_id,
-        thread_ts: root_ts,
-        text: "⚠️ PDF upload transfer failed."
-      });
+      (logger || console).error("PUT upload failed", { status: (putRes as any).status, statusText: (putRes as any).statusText });
+      await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "⚠️ PDF upload transfer failed." });
       return;
     }
 
-    // Complete upload (post back to same channel/thread)
     await client.apiCall("files.completeUploadExternal", {
       files: [{ id: file_id, title: filename }],
       channel_id: channel_id,
       initial_comment: `📄 Print-optimized PDF ready (${pairs.length} photos).`,
       thread_ts: root_ts
     });
-
   } catch (e: any) {
     (logger || console).error("export_pdf error:", e?.data || e?.message || e);
   }
