@@ -7,15 +7,8 @@ import { App, ExpressReceiver } from "@slack/bolt";
  * SLACK_BOT_TOKEN=xoxb-...
  * SLACK_SIGNING_SECRET=...
  *
- * App capabilities needed (already in your manifest):
- * - chat:write
- * - commands
- * - files:read
- * - files:write
- * - channels:history
- * - groups:history
- * - canvases:write
- * - (optional) canvases:read
+ * Scopes used (already in your app):
+ * - chat:write, commands, files:read, files:write, channels:history, groups:history, canvases:write
  */
 
 const receiver = new ExpressReceiver({
@@ -28,7 +21,6 @@ const bolt = new App({
   receiver
 });
 
-// ---------- Helpers ----------
 type Pair = { caption: string; permalink: string };
 
 function verifySlackSig(req: express.Request): boolean {
@@ -56,7 +48,7 @@ app.use("/slack", express.raw({ type: "*/*" }), (req, _res, next) => {
   next();
 });
 
-// ---------- Slash command (informational) ----------
+// Slash command just educates users
 app.post("/slack/commands", async (req, res) => {
   if (!verifySlackSig(req)) return res.status(401).send("bad sig");
   const payload = new URLSearchParams((req as any).rawBody);
@@ -70,7 +62,7 @@ app.post("/slack/commands", async (req, res) => {
   });
 });
 
-// ---------- Message Shortcut: primary trigger ----------
+// Message Shortcut → opens category picker
 bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
   await ack();
   try {
@@ -115,7 +107,7 @@ bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
   }
 });
 
-// ---------- Modal submission: create Canvas & notify ----------
+// Modal submit → build compact table layout & create Canvas
 bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
   await ack();
   try {
@@ -123,12 +115,11 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     const channel_id = meta.channel_id as string;
     const thread_ts = meta.thread_ts as string;
 
-    const sel =
+    const category =
       (view.state.values.category_block.category_action.selected_option?.value ||
         "other") as string;
-    const category = sel;
 
-    // 1) fetch replies in thread
+    // 1) Get all replies in the thread
     const replies = await client.conversations.replies({
       channel: channel_id,
       ts: thread_ts,
@@ -136,7 +127,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     });
     const messages = replies.messages || [];
 
-    // 2) collect pairs (Description -> Image)
+    // 2) Collect Description → Image pairs
     const pairs: Pair[] = [];
     for (const m of messages) {
       const files = (m as any).files as Array<any> | undefined;
@@ -165,25 +156,22 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    // 3) build markdown: Description first, then Image (with dividers)
+    // 3) Build COMPACT markdown using a 2-column table
+    // Left column = description; right column = image (scaled by cell width)
+    // Canvas supports markdown tables & image permalinks. 
+    // Ref: Canvases markdown + images. 
     const lines: string[] = [];
     lines.push(`# Collated — ${category}`);
     lines.push("");
+    lines.push("| Description | Image |");
+    lines.push("|---|---|");
     for (const p of pairs) {
-      if (p.caption) {
-        lines.push(p.caption);
-        lines.push("");
-      }
-      lines.push(`![](${p.permalink})`);
-      lines.push("");
-      lines.push("---");
-      lines.push("");
+      const desc = (p.caption || "").replace(/\n/g, "<br>");
+      lines.push(`| ${desc || "(no description)"} | ![](${p.permalink}) |`);
     }
     const markdown = lines.join("\n");
 
-    // 4) Create a canvas and attach it to this channel’s Canvas tab
-    //    Passing channel_id here adds it as the channel canvas (Web API supports this). 
-    //    Docs: canvases.create usage + channel_id. 
+    // 4) Create a canvas and attach it to the channel’s Canvas tab
     const created = (await client.apiCall("canvases.create", {
       title: `Collated — ${category}`,
       channel_id: channel_id,
@@ -200,15 +188,11 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    const canvas_id = created.canvas_id as string;
-
-    // 5) Post a message in the thread so it appears in the feed
-    //    We can’t call share_canvas (not available in your workspace),
-    //    so we notify the thread and tell users to open the Canvas tab.
+    // 5) Post a thread note so there’s a feed artifact
     await client.chat.postMessage({
       channel: channel_id,
       thread_ts,
-      text: `✅ Created a Canvas for *${category}*. Open the **Canvas** tab in this channel to view & edit. (Canvas ID: ${canvas_id})`
+      text: `✅ Created a compact Canvas for *${category}*. Open the **Canvas** tab in this channel to view & edit.`
     });
   } catch (e: any) {
     (logger || console).error("modal submit error:", e?.data || e?.message || e);
