@@ -7,6 +7,7 @@ const express_1 = __importDefault(require("express"));
 const crypto_1 = __importDefault(require("crypto"));
 const bolt_1 = require("@slack/bolt");
 const node_fetch_1 = __importDefault(require("node-fetch"));
+const sharp_1 = __importDefault(require("sharp"));
 const pdf_lib_1 = require("pdf-lib");
 /**
  * ENV REQUIRED (Render):
@@ -160,7 +161,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
         (logger || console).error("modal submit error:", e?.data || e?.message || e);
     }
 });
-// ========== SHORTCUT B: Export thread as PDF (robust upload + verify + fallback via uploadV2) ==========
+// ========== SHORTCUT B: Export thread as PDF (compress images + robust upload) ==========
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
     await ack();
     const botToken = process.env.SLACK_BOT_TOKEN;
@@ -176,7 +177,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
     const messages = replies.messages || [];
     // Step 2: collect images
     await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 2/7: Collecting images…" });
-    const imgs = [];
+    const items = [];
     for (const m of messages) {
         const files = m.files;
         if (!files || !files.length)
@@ -187,16 +188,16 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
         for (const f of files) {
             if (!/^image\//.test(f.mimetype || ""))
                 continue;
-            imgs.push({ caption, fileId: f.id });
+            items.push({ caption, fileId: f.id });
         }
     }
-    if (!imgs.length) {
+    if (!items.length) {
         await client.chat.update({ channel: channel_id, ts: progress_ts, text: "No images found in this thread." });
         return;
     }
-    // Step 3: build PDF
-    await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/7: Building PDF for ${imgs.length} images…` });
-    async function downloadBuffer(fileId) {
+    // Step 3: build PDF (Letter portrait, 2 columns) with pre-compressed images
+    await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/7: Building PDF for ${items.length} images…` });
+    async function downloadOriginal(fileId) {
         try {
             const info = (await client.apiCall("files.info", { file: fileId }));
             const url = info.file?.url_private_download || info.file?.url_private;
@@ -206,11 +207,20 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
             if (!res.ok)
                 return null;
             const ab = await res.arrayBuffer();
-            return new Uint8Array(ab);
+            return Buffer.from(ab);
         }
         catch {
             return null;
         }
+    }
+    async function compressToJpeg(buf) {
+        // Resize to max 1600px on the longest edge and JPEG @ quality 72
+        // (This massively reduces PDF size without hurting print clarity for 2-column layout)
+        return await (0, sharp_1.default)(buf)
+            .rotate() // respect EXIF orientation
+            .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
+            .jpeg({ quality: 72, chromaSubsampling: "4:2:0", mozjpeg: true })
+            .toBuffer();
     }
     const pdf = await pdf_lib_1.PDFDocument.create();
     const font = await pdf.embedFont(pdf_lib_1.StandardFonts.Helvetica);
@@ -218,7 +228,8 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
     const colW = (pageW - margin * 2 - gutter) / 2;
     const captionSize = 10, lineHeight = captionSize + 2, maxCaptionLines = 6;
     const captionBlockH = maxCaptionLines * lineHeight + 6;
-    const imageMaxH = 220;
+    const imageMaxH = 220; // display height; actual bytes are pre-compressed by sharp
+    const cellH = captionBlockH + imageMaxH + 12;
     function addPage() {
         const p = pdf.addPage([pageW, pageH]);
         p.drawText("Print Export", { x: margin, y: pageH - margin + 6, size: 12, font, color: (0, pdf_lib_1.rgb)(0, 0, 0) });
@@ -247,11 +258,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
             lines.push(cur);
         return lines.slice(0, maxLines);
     }
-    const cellH = (() => {
-        const captionBlockH = maxCaptionLines * lineHeight + 6;
-        return captionBlockH + imageMaxH + 12;
-    })();
-    for (const [i, it] of imgs.entries()) {
+    for (const [i, it] of items.entries()) {
         const x = margin + (col === 0 ? 0 : colW + gutter);
         if (curY - cellH < margin) {
             page = addPage();
@@ -265,34 +272,25 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
             textY -= lineHeight;
         }
         const afterCaptionY = textY - 6;
-        const buf = await downloadBuffer(it.fileId);
-        if (buf) {
-            let img = null;
+        const orig = await downloadOriginal(it.fileId);
+        if (orig) {
             try {
-                img = await pdf.embedJpg(buf);
-            }
-            catch { }
-            if (!img) {
-                try {
-                    img = await pdf.embedPng(buf);
-                }
-                catch { }
-            }
-            if (img) {
+                const jpg = await compressToJpeg(orig);
+                const img = await pdf.embedJpg(jpg);
                 const iw = img.width, ih = img.height;
                 const scale = Math.min(colW / iw, imageMaxH / ih);
                 const w = iw * scale, h = ih * scale;
                 page.drawImage(img, { x, y: afterCaptionY - h, width: w, height: h });
             }
-            else {
-                page.drawText("[unsupported image format]", { x, y: afterCaptionY - lineHeight, size: captionSize, font, color: (0, pdf_lib_1.rgb)(0.4, 0, 0) });
+            catch {
+                page.drawText("[image processing failed]", { x, y: afterCaptionY - lineHeight, size: captionSize, font, color: (0, pdf_lib_1.rgb)(0.4, 0, 0) });
             }
         }
         else {
             page.drawText("[failed to download image]", { x, y: afterCaptionY - lineHeight, size: captionSize, font, color: (0, pdf_lib_1.rgb)(0.4, 0, 0) });
         }
         if (i % 4 === 3) {
-            await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/7: Building PDF… (${i + 1}/${imgs.length})` });
+            await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/7: Building PDF… (${i + 1}/${items.length})` });
         }
         if (col === 0)
             col = 1;
@@ -307,10 +305,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
     // Step 4: init upload (external flow)
     await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 4/7: Initializing upload…" });
     const filename = `PrintExport_${new Date().toISOString().slice(0, 10)}.pdf`;
-    const up = (await client.apiCall("files.getUploadURLExternal", {
-        filename,
-        length: byteLen
-    }));
+    const up = (await client.apiCall("files.getUploadURLExternal", { filename, length: byteLen }));
     if (!up?.ok) {
         await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Upload init failed: ${up?.error || "unknown_error"}` });
         return;
@@ -318,6 +313,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
     const upload_url = up.upload_url;
     const file_id = up.file_id;
     // Step 4b: PUT to Slack storage (exact Content-Length)
+    let externalUploaded = false;
     const putRes = await (0, node_fetch_1.default)(upload_url, {
         method: "PUT",
         headers: {
@@ -326,50 +322,35 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
         },
         body: bodyBuf
     });
-    if (!putRes.ok) {
-        await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Upload transfer failed: ${putRes.status} ${putRes.statusText}` });
-        return;
+    if (putRes.ok) {
+        externalUploaded = true;
     }
-    // Step 5: complete upload (share to thread)
-    await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 5/7: Finalizing upload…" });
-    const done = (await client.apiCall("files.completeUploadExternal", {
-        files: [{ id: file_id, title: filename }],
-        channel_id: channel_id,
-        initial_comment: `📄 Print-optimized PDF ready (${imgs.length} photos).`,
-        thread_ts: root_ts
-    }));
-    if (!done?.ok) {
-        await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Finalize failed: ${done?.error || "unknown_error"}` });
-        return;
+    else {
+        // if 413 or any failure, we’ll fall back to uploadV2
+        const status = putRes.status;
+        await client.chat.update({
+            channel: channel_id,
+            ts: progress_ts,
+            text: `Step 4/7: External upload failed (${status}). Falling back…`
+        });
     }
-    // Step 6: verify Slack can serve the blob
-    await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 6/7: Verifying file…" });
-    let dlOk = false;
-    let permalink = null;
-    try {
-        for (let i = 0; i < 8; i++) {
-            const info = (await client.apiCall("files.info", { file: file_id }));
-            permalink = info?.file?.permalink || null;
-            const dl = info?.file?.url_private_download || info?.file?.url_private || null;
-            if (dl) {
-                const res = await (0, node_fetch_1.default)(dl, { headers: { Authorization: `Bearer ${botToken}` } });
-                if (res.ok) {
-                    const buf = Buffer.from(await res.arrayBuffer());
-                    if (buf.length === byteLen) {
-                        dlOk = true;
-                        break;
-                    }
-                }
-            }
-            await new Promise(r => setTimeout(r, 1000));
+    // Step 5: complete upload (or fallback via uploadV2)
+    if (externalUploaded) {
+        await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 5/7: Finalizing upload…" });
+        const done = (await client.apiCall("files.completeUploadExternal", {
+            files: [{ id: file_id, title: filename }],
+            channel_id: channel_id,
+            initial_comment: `📄 Print-optimized PDF ready (${items.length} photos).`,
+            thread_ts: root_ts
+        }));
+        if (!done?.ok) {
+            await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Finalize failed: ${done?.error || "unknown_error"}. Falling back…` });
+            externalUploaded = false; // trigger fallback below
         }
     }
-    catch {
-        // ignore; we'll fallback
-    }
-    if (!dlOk) {
-        // ---------- FALLBACK via files.uploadV2 ----------
-        await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 6/7: Primary upload not accessible. Falling back…" });
+    if (!externalUploaded) {
+        // ---------- FALLBACK via files.uploadV2 (multipart) ----------
+        await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 5/7: Uploading via fallback method…" });
         const up2 = await client.files.uploadV2({
             channel_id,
             thread_ts: root_ts,
@@ -387,22 +368,33 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
             });
             return;
         }
-        // grab file id from either .files[0].id or .file.id depending on SDK version
-        const fid = up2?.files?.[0]?.id || up2?.file?.id;
-        if (fid) {
-            try {
-                const info2 = await client.files.info({ file: fid });
-                const p2 = info2?.file?.permalink;
-                if (p2) {
-                    await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: `📎 PDF (fallback): ${p2}` });
-                }
-            }
-            catch { }
-        }
+        // Done via fallback
         await client.chat.update({ channel: channel_id, ts: progress_ts, text: "✅ Done: PDF posted in this thread. (fallback)" });
         return;
     }
-    // Step 7: success (primary) — also post permalink so it’s visible even if card is delayed
+    // Step 6: verify Slack can serve the blob (should be fine now that size is small)
+    await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 6/7: Verifying file…" });
+    let dlOk = false;
+    let permalink = null;
+    try {
+        for (let i = 0; i < 6; i++) {
+            const info = (await client.apiCall("files.info", { file: file_id }));
+            permalink = info?.file?.permalink || null;
+            const dl = info?.file?.url_private_download || info?.file?.url_private || null;
+            if (dl) {
+                const res = await (0, node_fetch_1.default)(dl, { headers: { Authorization: `Bearer ${botToken}` } });
+                if (res.ok) {
+                    const buf = Buffer.from(await res.arrayBuffer());
+                    if (buf.length === byteLen) {
+                        dlOk = true;
+                        break;
+                    }
+                }
+            }
+            await new Promise(r => setTimeout(r, 1000));
+        }
+    }
+    catch { }
     if (permalink) {
         await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: `📎 PDF: ${permalink}` });
     }
