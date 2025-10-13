@@ -40,7 +40,8 @@ function verifySlackSig(req: express.Request): boolean {
 // capture raw body for signature verification
 const app = receiver.app as unknown as express.Express;
 app.use("/slack", express.raw({ type: "*/*" }), (req, _res, next) => {
-  (req as any).rawBody = (req as any).rawBody || (req as any).body?.toString?.() || req.body;
+  (req as any).rawBody =
+    (req as any).rawBody || (req as any).body?.toString?.() || req.body;
   next();
 });
 
@@ -52,7 +53,8 @@ app.post("/slack/commands", async (req, res) => {
   if (command !== "/collate") return res.send("");
   return res.json({
     response_type: "ephemeral",
-    text: "Use the message shortcut *Collate thread to Canvas* on any message inside the thread that contains your images. (Slash commands don’t carry thread context.)"
+    text:
+      "Use the message shortcut *Collate thread to Canvas* on any message inside the thread that contains your images. (Slash commands don’t carry thread context.)"
   });
 });
 
@@ -163,7 +165,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
   }
 });
 
-// ========== SHORTCUT B: Export thread as PDF (progress + permalink post) ==========
+// ========== SHORTCUT B: Export thread as PDF (robust upload + verify) ==========
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   await ack();
   const botToken = process.env.SLACK_BOT_TOKEN as string;
@@ -172,16 +174,16 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const channel_id = channel.id as string;
 
   // Step 0: start
-  const startMsg = await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "Step 0/5: Starting export…" });
+  const startMsg = await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "Step 0/6: Starting export…" });
   const progress_ts = (startMsg as any).ts as string;
 
   // Step 1: fetch replies
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 1/5: Reading thread…" });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 1/6: Reading thread…" });
   const replies = await client.conversations.replies({ channel: channel_id, ts: root_ts, limit: 200 });
   const messages = replies.messages || [];
 
   // Step 2: collect images
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 2/5: Collecting images…" });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 2/6: Collecting images…" });
   const imgs: { caption: string; fileId: string }[] = [];
   for (const m of messages) {
     const files = (m as any).files as Array<any> | undefined;
@@ -200,8 +202,8 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     return;
   }
 
-  // Step 3: build PDF
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/5: Building PDF for ${imgs.length} images…` });
+  // Step 3: build PDF (Letter portrait, 2 columns)
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/6: Building PDF for ${imgs.length} images…` });
 
   async function downloadBuffer(fileId: string): Promise<Uint8Array | null> {
     try {
@@ -286,18 +288,23 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     }
 
     if (i % 4 === 3) {
-      await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/5: Building PDF… (${i+1}/${imgs.length})` });
+      await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/6: Building PDF… (${i+1}/${imgs.length})` });
     }
 
     if (col === 0) col = 1; else { col = 0; curY = afterCaptionY - imageMaxH - 12; }
   }
 
   const pdfBytes = await pdf.save();
+  const bodyBuf = Buffer.from(pdfBytes);
+  const byteLen = bodyBuf.length;
 
   // Step 4: init upload
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 4/5: Initializing upload…" });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 4/6: Initializing upload…" });
   const filename = `PrintExport_${new Date().toISOString().slice(0, 10)}.pdf`;
-  const up = (await client.apiCall("files.getUploadURLExternal", { filename, length: pdfBytes.length })) as any;
+  const up = (await client.apiCall("files.getUploadURLExternal", {
+    filename,
+    length: byteLen
+  })) as any;
   if (!up?.ok) {
     await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Upload init failed: ${up?.error || "unknown_error"}` });
     return;
@@ -305,11 +312,14 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const upload_url = up.upload_url as string;
   const file_id = up.file_id as string;
 
-  // Step 4b: PUT
+  // Step 4b: PUT with explicit headers
   const putRes = await fetch(upload_url, {
     method: "PUT",
-    headers: { "Content-Type": "application/octet-stream" },
-    body: Buffer.from(pdfBytes)
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Length": byteLen.toString()
+    },
+    body: bodyBuf
   } as any);
   if (!(putRes as any).ok) {
     await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Upload transfer failed: ${(putRes as any).status} ${(putRes as any).statusText}` });
@@ -317,7 +327,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   }
 
   // Step 5: complete upload (share directly to thread)
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 5/5: Finalizing upload…" });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 5/6: Finalizing upload…" });
   const done = (await client.apiCall("files.completeUploadExternal", {
     files: [{ id: file_id, title: filename }],
     channel_id: channel_id,
@@ -325,23 +335,22 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     thread_ts: root_ts
   })) as any;
 
-  // If Slack says no, show the reason
   if (!done?.ok) {
     await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Finalize failed: ${done?.error || "unknown_error"}` });
     return;
   }
 
-  // NEW: poll files.info for permalink, then post it so you always see something in the thread
+  // Step 6: verify + post permalink (in case Slack delays file card)
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 6/6: Verifying file…" });
+
   let permalink: string | null = null;
-  for (let i = 0; i < 6; i++) { // try up to ~6s
+  for (let i = 0; i < 8; i++) { // try up to ~8s
     try {
       const info = (await client.apiCall("files.info", { file: file_id })) as any;
       permalink = info?.file?.permalink as string | undefined || null;
       if (permalink) break;
-      await new Promise(r => setTimeout(r, 1000));
-    } catch {
-      await new Promise(r => setTimeout(r, 1000));
-    }
+    } catch {}
+    await new Promise(r => setTimeout(r, 1000));
   }
 
   if (permalink) {
