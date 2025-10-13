@@ -59,7 +59,7 @@ app.post("/slack/commands", async (req, res) => {
         text: "Use the message shortcut *Collate thread to Canvas* on any message inside the thread that contains your images. (Slash commands don’t carry thread context.)"
     });
 });
-// ---------- Shortcut A: Collate thread to Canvas (unchanged) ----------
+// ========== SHORTCUT A: Collate thread to Canvas ==========
 bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
     await ack();
     try {
@@ -107,7 +107,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
         const channel_id = meta.channel_id;
         const thread_ts = meta.thread_ts;
         const category = (view.state.values.category_block.category_action.selected_option?.value || "other");
-        // fetch replies
         const replies = await client.conversations.replies({ channel: channel_id, ts: thread_ts, limit: 200 });
         const messages = replies.messages || [];
         const pairs = [];
@@ -160,53 +159,191 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
         (logger || console).error("modal submit error:", e?.data || e?.message || e);
     }
 });
-// ---------- Shortcut B: Export thread as PDF (TEMP: minimal test upload) ----------
+// ========== SHORTCUT B: Export thread as PDF (with progress updates) ==========
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
     await ack();
     try {
+        const botToken = process.env.SLACK_BOT_TOKEN;
         const { channel, message_ts, thread_ts } = shortcut;
         const root_ts = thread_ts || message_ts;
         const channel_id = channel.id;
-        // Tell users we're working
-        await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "Generating print-optimized PDF…" });
-        // Create a tiny 1-page PDF
+        // Step 0: start
+        const startMsg = await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "Step 0/5: Starting export…" });
+        const progress_ts = startMsg.ts;
+        // Step 1: fetch replies
+        await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 1/5: Reading thread…" });
+        const replies = await client.conversations.replies({ channel: channel_id, ts: root_ts, limit: 200 });
+        const messages = replies.messages || [];
+        // Step 2: collect images
+        await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 2/5: Collecting images…" });
+        const imgs = [];
+        for (const m of messages) {
+            const files = m.files;
+            if (!files || !files.length)
+                continue;
+            const caption = m.text?.trim() ||
+                (files[0]?.initial_comment?.comment?.trim?.() ?? "") ||
+                (files[0]?.title?.trim?.() ?? "");
+            for (const f of files) {
+                if (!/^image\//.test(f.mimetype || ""))
+                    continue;
+                imgs.push({ caption, fileId: f.id });
+            }
+        }
+        if (!imgs.length) {
+            await client.chat.update({ channel: channel_id, ts: progress_ts, text: "No images found in this thread." });
+            return;
+        }
+        // Step 3: build PDF
+        await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/5: Building PDF for ${imgs.length} images…` });
+        async function downloadBuffer(fileId) {
+            try {
+                const info = (await client.apiCall("files.info", { file: fileId }));
+                const url = info.file?.url_private_download || info.file?.url_private;
+                if (!url)
+                    return null;
+                const res = await (0, node_fetch_1.default)(url, { headers: { Authorization: `Bearer ${botToken}` } });
+                if (!res.ok)
+                    return null;
+                const ab = await res.arrayBuffer();
+                return new Uint8Array(ab);
+            }
+            catch {
+                return null;
+            }
+        }
         const pdf = await pdf_lib_1.PDFDocument.create();
-        const page = pdf.addPage([612, 792]); // US Letter
-        const font = await pdf.embedFont(pdf_lib_1.StandardFonts.HelveticaBold);
-        page.drawText("Collate to Canvas — Test PDF", { x: 72, y: 720, size: 18, font, color: (0, pdf_lib_1.rgb)(0, 0, 0) });
+        const font = await pdf.embedFont(pdf_lib_1.StandardFonts.Helvetica);
+        const pageW = 612, pageH = 792, margin = 36, gutter = 18;
+        const colW = (pageW - margin * 2 - gutter) / 2;
+        const captionSize = 10, lineHeight = captionSize + 2, maxCaptionLines = 6;
+        const captionBlockH = maxCaptionLines * lineHeight + 6;
+        const imageMaxH = 220;
+        const cellH = captionBlockH + imageMaxH + 12;
+        function addPage() {
+            const p = pdf.addPage([pageW, pageH]);
+            p.drawText("Print Export", { x: margin, y: pageH - margin + 6, size: 12, font, color: (0, pdf_lib_1.rgb)(0, 0, 0) });
+            return p;
+        }
+        let page = addPage();
+        let curY = pageH - margin - 18;
+        let col = 0;
+        function wrapText(text, maxWidth, maxLines) {
+            const words = (text || "").replace(/\r/g, "").split(/\s+/);
+            const lines = [];
+            let cur = "";
+            for (const w of words) {
+                const test = cur ? cur + " " + w : w;
+                if (font.widthOfTextAtSize(test, captionSize) <= maxWidth)
+                    cur = test;
+                else {
+                    if (cur)
+                        lines.push(cur);
+                    cur = w;
+                    if (lines.length >= maxLines - 1)
+                        break;
+                }
+            }
+            if (cur)
+                lines.push(cur);
+            return lines.slice(0, maxLines);
+        }
+        for (const [i, it] of imgs.entries()) {
+            const x = margin + (col === 0 ? 0 : colW + gutter);
+            if (curY - cellH < margin) {
+                page = addPage();
+                curY = pageH - margin - 18;
+                col = 0;
+            }
+            const wrapped = wrapText(it.caption, colW, maxCaptionLines);
+            let textY = curY - lineHeight;
+            for (const line of wrapped) {
+                page.drawText(line, { x, y: textY, size: captionSize, font, color: (0, pdf_lib_1.rgb)(0, 0, 0) });
+                textY -= lineHeight;
+            }
+            const afterCaptionY = textY - 6;
+            const buf = await downloadBuffer(it.fileId);
+            if (buf) {
+                let img = null;
+                try {
+                    img = await pdf.embedJpg(buf);
+                }
+                catch { }
+                if (!img) {
+                    try {
+                        img = await pdf.embedPng(buf);
+                    }
+                    catch { }
+                }
+                if (img) {
+                    const iw = img.width, ih = img.height;
+                    const scale = Math.min(colW / iw, imageMaxH / ih);
+                    const w = iw * scale, h = ih * scale;
+                    page.drawImage(img, { x, y: afterCaptionY - h, width: w, height: h });
+                }
+                else {
+                    page.drawText("[unsupported image format]", { x, y: afterCaptionY - lineHeight, size: captionSize, font, color: (0, pdf_lib_1.rgb)(0.4, 0, 0) });
+                }
+            }
+            else {
+                page.drawText("[failed to download image]", { x, y: afterCaptionY - lineHeight, size: captionSize, font, color: (0, pdf_lib_1.rgb)(0.4, 0, 0) });
+            }
+            // progress every few images
+            if (i % 4 === 3) {
+                await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/5: Building PDF… (${i + 1}/${imgs.length})` });
+            }
+            if (col === 0)
+                col = 1;
+            else {
+                col = 0;
+                curY = afterCaptionY - imageMaxH - 12;
+            }
+        }
         const pdfBytes = await pdf.save();
-        const filename = `TestExport_${new Date().toISOString().slice(0, 10)}.pdf`;
-        // Upload via external upload flow
-        const up = (await client.apiCall("files.getUploadURLExternal", {
-            filename,
-            length: pdfBytes.length
-        }));
+        // Step 4: init upload
+        await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 4/5: Initializing upload…" });
+        const filename = `PrintExport_${new Date().toISOString().slice(0, 10)}.pdf`;
+        const up = (await client.apiCall("files.getUploadURLExternal", { filename, length: pdfBytes.length }));
         if (!up?.ok) {
-            (logger || console).error("getUploadURLExternal failed:", up);
-            await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "⚠️ PDF upload init failed." });
+            await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Upload init failed: ${up?.error || "unknown_error"}` });
             return;
         }
         const upload_url = up.upload_url;
         const file_id = up.file_id;
+        // Step 4b: PUT
         const putRes = await (0, node_fetch_1.default)(upload_url, {
             method: "PUT",
             headers: { "Content-Type": "application/octet-stream" },
             body: Buffer.from(pdfBytes)
         });
         if (!putRes.ok) {
-            (logger || console).error("PUT upload failed", { status: putRes.status, statusText: putRes.statusText });
-            await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "⚠️ PDF upload transfer failed." });
+            await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Upload transfer failed: ${putRes.status} ${putRes.statusText}` });
             return;
         }
-        await client.apiCall("files.completeUploadExternal", {
+        // Step 5: complete upload
+        await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 5/5: Finalizing upload…" });
+        const done = (await client.apiCall("files.completeUploadExternal", {
             files: [{ id: file_id, title: filename }],
             channel_id: channel_id,
-            initial_comment: `📄 Test PDF ready.`,
+            initial_comment: `📄 Print-optimized PDF ready.`,
             thread_ts: root_ts
-        });
+        }));
+        if (!done?.ok) {
+            await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Finalize failed: ${done?.error || "unknown_error"}` });
+            return;
+        }
+        // success
+        await client.chat.update({ channel: channel_id, ts: progress_ts, text: "✅ Done: PDF posted in this thread." });
     }
     catch (e) {
-        (logger || console).error("export_pdf test error:", e?.data || e?.message || e);
+        try {
+            const { channel, message_ts, thread_ts } = (e && e.shortcut) || {};
+            const root_ts = thread_ts || message_ts;
+            if (channel?.id && root_ts) {
+                await bolt.client.chat.postMessage({ channel: channel.id, thread_ts: root_ts, text: "⚠️ Export failed (unexpected error)." });
+            }
+        }
+        catch { }
     }
 });
 (async () => {
