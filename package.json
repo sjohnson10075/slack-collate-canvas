@@ -1,0 +1,23 @@
+{
+  "name": "slack-collate-canvas",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "dependencies": {
+    "@slack/bolt": "^3.18.0",
+    "express": "^4.19.2",
+    "node-fetch": "2.7.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.12.7",
+    "@types/node-fetch": "^2.6.13",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}
