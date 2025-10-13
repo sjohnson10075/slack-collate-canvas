@@ -159,7 +159,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
         (logger || console).error("modal submit error:", e?.data || e?.message || e);
     }
 });
-// ========== SHORTCUT B: Export thread as PDF (progress, share via completeUploadExternal) ==========
+// ========== SHORTCUT B: Export thread as PDF (progress + permalink post) ==========
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     await ack();
     const botToken = process.env.SLACK_BOT_TOKEN;
@@ -326,9 +326,31 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
         initial_comment: `📄 Print-optimized PDF ready (${imgs.length} photos).`,
         thread_ts: root_ts
     }));
+    // If Slack says no, show the reason
     if (!done?.ok) {
         await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Finalize failed: ${done?.error || "unknown_error"}` });
         return;
+    }
+    // NEW: poll files.info for permalink, then post it so you always see something in the thread
+    let permalink = null;
+    for (let i = 0; i < 6; i++) { // try up to ~6s
+        try {
+            const info = (await client.apiCall("files.info", { file: file_id }));
+            permalink = info?.file?.permalink || null;
+            if (permalink)
+                break;
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        catch {
+            await new Promise(r => setTimeout(r, 1000));
+        }
+    }
+    if (permalink) {
+        await client.chat.postMessage({
+            channel: channel_id,
+            thread_ts: root_ts,
+            text: `📎 PDF: ${permalink}`
+        });
     }
     await client.chat.update({ channel: channel_id, ts: progress_ts, text: "✅ Done: PDF posted in this thread." });
 });
