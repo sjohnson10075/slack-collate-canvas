@@ -159,7 +159,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
         (logger || console).error("modal submit error:", e?.data || e?.message || e);
     }
 });
-// ========== SHORTCUT B: Export thread as PDF (progress + explicit share) ==========
+// ========== SHORTCUT B: Export thread as PDF (progress, share via completeUploadExternal) ==========
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     await ack();
     const botToken = process.env.SLACK_BOT_TOKEN;
@@ -318,24 +318,16 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
         await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Upload transfer failed: ${putRes.status} ${putRes.statusText}` });
         return;
     }
-    // Step 5: complete upload
+    // Step 5: complete upload (share directly to thread)
     await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 5/5: Finalizing upload…" });
     const done = (await client.apiCall("files.completeUploadExternal", {
-        files: [{ id: file_id, title: filename }]
+        files: [{ id: file_id, title: filename }],
+        channel_id: channel_id,
+        initial_comment: `📄 Print-optimized PDF ready (${imgs.length} photos).`,
+        thread_ts: root_ts
     }));
     if (!done?.ok) {
         await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Finalize failed: ${done?.error || "unknown_error"}` });
-        return;
-    }
-    // NEW: explicitly share the file to the channel/thread to ensure a visible message
-    const shared = (await client.apiCall("files.share", {
-        file: file_id,
-        channel_id: channel_id,
-        initial_comment: `📄 Print-optimized PDF ready.`,
-        thread_ts: root_ts
-    }));
-    if (!shared?.ok) {
-        await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Share failed: ${shared?.error || "unknown_error"}` });
         return;
     }
     await client.chat.update({ channel: channel_id, ts: progress_ts, text: "✅ Done: PDF posted in this thread." });
