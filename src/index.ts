@@ -165,8 +165,8 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
   }
 });
 
-// ========== SHORTCUT B: Export thread as PDF (robust upload + verify) ==========
-bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
+// ========== SHORTCUT B: Export thread as PDF (robust upload + verify + fallback) ==========
+bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
   await ack();
   const botToken = process.env.SLACK_BOT_TOKEN as string;
   const { channel, message_ts, thread_ts } = shortcut as any;
@@ -174,16 +174,16 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const channel_id = channel.id as string;
 
   // Step 0: start
-  const startMsg = await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "Step 0/6: Starting export…" });
+  const startMsg = await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "Step 0/7: Starting export…" });
   const progress_ts = (startMsg as any).ts as string;
 
   // Step 1: fetch replies
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 1/6: Reading thread…" });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 1/7: Reading thread…" });
   const replies = await client.conversations.replies({ channel: channel_id, ts: root_ts, limit: 200 });
   const messages = replies.messages || [];
 
   // Step 2: collect images
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 2/6: Collecting images…" });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 2/7: Collecting images…" });
   const imgs: { caption: string; fileId: string }[] = [];
   for (const m of messages) {
     const files = (m as any).files as Array<any> | undefined;
@@ -202,8 +202,8 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     return;
   }
 
-  // Step 3: build PDF (Letter portrait, 2 columns)
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/6: Building PDF for ${imgs.length} images…` });
+  // Step 3: build PDF
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/7: Building PDF for ${imgs.length} images…` });
 
   async function downloadBuffer(fileId: string): Promise<Uint8Array | null> {
     try {
@@ -226,7 +226,6 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const captionSize = 10, lineHeight = captionSize + 2, maxCaptionLines = 6;
   const captionBlockH = maxCaptionLines * lineHeight + 6;
   const imageMaxH = 220;
-  const cellH = captionBlockH + imageMaxH + 12;
 
   function addPage() {
     const p = pdf.addPage([pageW, pageH]);
@@ -253,6 +252,11 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     if (cur) lines.push(cur);
     return lines.slice(0, maxLines);
   }
+
+  const cellH = (() => {
+    const captionBlockH = maxCaptionLines * lineHeight + 6;
+    return captionBlockH + imageMaxH + 12;
+  })();
 
   for (const [i, it] of imgs.entries()) {
     const x = margin + (col === 0 ? 0 : colW + gutter);
@@ -288,7 +292,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     }
 
     if (i % 4 === 3) {
-      await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/6: Building PDF… (${i+1}/${imgs.length})` });
+      await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/7: Building PDF… (${i+1}/${imgs.length})` });
     }
 
     if (col === 0) col = 1; else { col = 0; curY = afterCaptionY - imageMaxH - 12; }
@@ -298,8 +302,8 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const bodyBuf = Buffer.from(pdfBytes);
   const byteLen = bodyBuf.length;
 
-  // Step 4: init upload
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 4/6: Initializing upload…" });
+  // Step 4: init upload (external flow)
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 4/7: Initializing upload…" });
   const filename = `PrintExport_${new Date().toISOString().slice(0, 10)}.pdf`;
   const up = (await client.apiCall("files.getUploadURLExternal", {
     filename,
@@ -312,7 +316,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const upload_url = up.upload_url as string;
   const file_id = up.file_id as string;
 
-  // Step 4b: PUT with headers Slack expects
+  // Step 4b: PUT to Slack storage (exact Content-Length)
   const putRes = await fetch(upload_url, {
     method: "PUT",
     headers: {
@@ -326,8 +330,8 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     return;
   }
 
-  // Step 5: complete upload (share directly to thread)
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 5/6: Finalizing upload…" });
+  // Step 5: complete upload (share to thread)
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 5/7: Finalizing upload…" });
   const done = (await client.apiCall("files.completeUploadExternal", {
     files: [{ id: file_id, title: filename }],
     channel_id: channel_id,
@@ -340,27 +344,61 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     return;
   }
 
-  // Step 6: verify + post permalink (in case Slack delays file card)
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 6/6: Verifying file…" });
+  // Step 6: verify Slack can serve the blob
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 6/7: Verifying file…" });
 
+  // fetch files.info → url_private_download → GET with bot token
+  let dlOk = false;
   let permalink: string | null = null;
-  for (let i = 0; i < 8; i++) { // try up to ~8s
-    try {
+  try {
+    for (let i = 0; i < 8; i++) {
       const info = (await client.apiCall("files.info", { file: file_id })) as any;
-      permalink = info?.file?.permalink as string | undefined || null;
-      if (permalink) break;
-    } catch {}
-    await new Promise(r => setTimeout(r, 1000));
+      permalink = info?.file?.permalink || null;
+      const dl = info?.file?.url_private_download || info?.file?.url_private || null;
+      if (dl) {
+        const res = await fetch(dl, { headers: { Authorization: `Bearer ${botToken}` } } as any);
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          if (buf.length === byteLen) { dlOk = true; break; }
+        }
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  } catch (e) {
+    // ignore; we'll fallback
   }
 
-  if (permalink) {
-    await client.chat.postMessage({
-      channel: channel_id,
+  if (!dlOk) {
+    // Step 6b: fallback to legacy multipart upload so you still get a usable PDF
+    await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 6/7: Primary upload not accessible. Falling back…" });
+    const up2 = await (client as any).files.upload({
+      channels: channel_id,
       thread_ts: root_ts,
-      text: `📎 PDF: ${permalink}`
+      filename,
+      filetype: "pdf",
+      initial_comment: "📄 Print-optimized PDF (fallback upload).",
+      file: bodyBuf
     });
+    if (!up2?.ok) {
+      await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Fallback upload failed: ${up2?.error || "unknown_error"}` });
+      return;
+    }
+    // post permalink of fallback
+    try {
+      const info2 = await (client as any).files.info({ file: up2.file.id });
+      const p2 = info2?.file?.permalink;
+      if (p2) {
+        await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: `📎 PDF (fallback): ${p2}` });
+      }
+    } catch {}
+    await client.chat.update({ channel: channel_id, ts: progress_ts, text: "✅ Done: PDF posted in this thread. (fallback)" });
+    return;
   }
 
+  // Step 7: success (primary), also post permalink to ensure visibility
+  if (permalink) {
+    await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: `📎 PDF: ${permalink}` });
+  }
   await client.chat.update({ channel: channel_id, ts: progress_ts, text: "✅ Done: PDF posted in this thread." });
 });
 
