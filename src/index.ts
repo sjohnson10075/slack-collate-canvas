@@ -6,11 +6,21 @@ import { App, ExpressReceiver } from "@slack/bolt";
  * ENV REQUIRED (set in Render):
  * SLACK_BOT_TOKEN=xoxb-...
  * SLACK_SIGNING_SECRET=...
+ *
+ * App capabilities needed (already in your manifest):
+ * - chat:write
+ * - commands
+ * - files:read
+ * - files:write
+ * - channels:history
+ * - groups:history
+ * - canvases:write
+ * - (optional) canvases:read
  */
 
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET as string,
-  endpoints: "/slack/events" // endpoint must exist even if unused
+  endpoints: "/slack/events"
 });
 const bolt = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -41,11 +51,12 @@ function verifySlackSig(req: express.Request): boolean {
 // capture raw body for signature verification
 const app = receiver.app as unknown as express.Express;
 app.use("/slack", express.raw({ type: "*/*" }), (req, _res, next) => {
-  (req as any).rawBody = (req as any).rawBody || (req as any).body?.toString?.() || req.body;
+  (req as any).rawBody =
+    (req as any).rawBody || (req as any).body?.toString?.() || req.body;
   next();
 });
 
-// ---------- Slash command: just educate users to use the shortcut ----------
+// ---------- Slash command (informational) ----------
 app.post("/slack/commands", async (req, res) => {
   if (!verifySlackSig(req)) return res.status(401).send("bad sig");
   const payload = new URLSearchParams((req as any).rawBody);
@@ -71,7 +82,10 @@ bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
       view: {
         type: "modal",
         callback_id: "collate_modal",
-        private_metadata: JSON.stringify({ channel_id: channel.id, thread_ts: root_ts }),
+        private_metadata: JSON.stringify({
+          channel_id: channel.id,
+          thread_ts: root_ts
+        }),
         title: { type: "plain_text", text: "Collate to Canvas" },
         submit: { type: "plain_text", text: "Create Canvas" },
         close: { type: "plain_text", text: "Cancel" },
@@ -97,12 +111,11 @@ bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
       }
     });
   } catch (e: any) {
-    // log but avoid user-facing spam
     (logger || console).error("shortcut error:", e?.data || e?.message || e);
   }
 });
 
-// ---------- Modal submission: do the work ----------
+// ---------- Modal submission: create Canvas & notify ----------
 bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
   await ack();
   try {
@@ -110,11 +123,17 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     const channel_id = meta.channel_id as string;
     const thread_ts = meta.thread_ts as string;
 
-    const sel = (view.state.values.category_block.category_action.selected_option?.value || "other") as string;
+    const sel =
+      (view.state.values.category_block.category_action.selected_option?.value ||
+        "other") as string;
     const category = sel;
 
     // 1) fetch replies in thread
-    const replies = await client.conversations.replies({ channel: channel_id, ts: thread_ts, limit: 200 });
+    const replies = await client.conversations.replies({
+      channel: channel_id,
+      ts: thread_ts,
+      limit: 200
+    });
     const messages = replies.messages || [];
 
     // 2) collect pairs (Description -> Image)
@@ -130,7 +149,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
 
       for (const f of files) {
         if (!/^image\//.test(f.mimetype || "")) continue;
-        // Use generic API call to avoid missing TS types
         const info = (await client.apiCall("files.info", { file: f.id })) as any;
         const permalink = info.file?.permalink as string;
         if (!permalink) continue;
@@ -147,7 +165,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    // 3) build markdown: Description first, then Image
+    // 3) build markdown: Description first, then Image (with dividers)
     const lines: string[] = [];
     lines.push(`# Collated — ${category}`);
     lines.push("");
@@ -163,9 +181,12 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     }
     const markdown = lines.join("\n");
 
-    // 4) create a Canvas with initial content (generic API call)
+    // 4) Create a canvas and attach it to this channel’s Canvas tab
+    //    Passing channel_id here adds it as the channel canvas (Web API supports this). 
+    //    Docs: canvases.create usage + channel_id. 
     const created = (await client.apiCall("canvases.create", {
       title: `Collated — ${category}`,
+      channel_id: channel_id,
       document_content: { type: "markdown", markdown }
     })) as any;
 
@@ -181,31 +202,13 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
 
     const canvas_id = created.canvas_id as string;
 
-    // 5) post the Canvas into the channel feed (generic API call)
-    const share = (await client.apiCall("functions.execute", {
-      function: "share_canvas",
-      inputs: {
-        canvas_id,
-        channel_ids: [channel_id],
-        message: `Collated **${pairs.length}** images for *${category}* (Description → Image). This Canvas stays editable in place.`
-      }
-    })) as any;
-
-    if (!share?.ok) {
-      (logger || console).error("functions.execute share_canvas failed:", share);
-      await client.chat.postMessage({
-        channel: channel_id,
-        thread_ts,
-        text: `⚠️ Share Canvas failed.`
-      });
-      return;
-    }
-
-    // 6) notify the thread
+    // 5) Post a message in the thread so it appears in the feed
+    //    We can’t call share_canvas (not available in your workspace),
+    //    so we notify the thread and tell users to open the Canvas tab.
     await client.chat.postMessage({
       channel: channel_id,
       thread_ts,
-      text: "✅ Canvas posted to the channel feed."
+      text: `✅ Created a Canvas for *${category}*. Open the **Canvas** tab in this channel to view & edit. (Canvas ID: ${canvas_id})`
     });
   } catch (e: any) {
     (logger || console).error("modal submit error:", e?.data || e?.message || e);
