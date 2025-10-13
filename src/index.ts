@@ -165,7 +165,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
   }
 });
 
-// ========== SHORTCUT B: Export thread as PDF (robust upload + verify + fallback) ==========
+// ========== SHORTCUT B: Export thread as PDF (robust upload + verify + fallback via uploadV2) ==========
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
   await ack();
   const botToken = process.env.SLACK_BOT_TOKEN as string;
@@ -347,7 +347,6 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
   // Step 6: verify Slack can serve the blob
   await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 6/7: Verifying file…" });
 
-  // fetch files.info → url_private_download → GET with bot token
   let dlOk = false;
   let permalink: string | null = null;
   try {
@@ -364,38 +363,52 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
       }
       await new Promise(r => setTimeout(r, 1000));
     }
-  } catch (e) {
+  } catch {
     // ignore; we'll fallback
   }
 
   if (!dlOk) {
-    // Step 6b: fallback to legacy multipart upload so you still get a usable PDF
+    // ---------- FALLBACK via files.uploadV2 ----------
     await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 6/7: Primary upload not accessible. Falling back…" });
-    const up2 = await (client as any).files.upload({
-      channels: channel_id,
+
+    const up2 = await (client as any).files.uploadV2({
+      channel_id,
       thread_ts: root_ts,
       filename,
-      filetype: "pdf",
       initial_comment: "📄 Print-optimized PDF (fallback upload).",
-      file: bodyBuf
+      file: bodyBuf,
+      content_type: "application/pdf",
+      title: filename
     });
+
     if (!up2?.ok) {
-      await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Fallback upload failed: ${up2?.error || "unknown_error"}` });
+      await client.chat.update({
+        channel: channel_id,
+        ts: progress_ts,
+        text: `Fallback upload failed: ${up2?.error || "unknown_error"}`
+      });
       return;
     }
-    // post permalink of fallback
-    try {
-      const info2 = await (client as any).files.info({ file: up2.file.id });
-      const p2 = info2?.file?.permalink;
-      if (p2) {
-        await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: `📎 PDF (fallback): ${p2}` });
-      }
-    } catch {}
+
+    // grab file id from either .files[0].id or .file.id depending on SDK version
+    const fid: string | undefined =
+      up2?.files?.[0]?.id || up2?.file?.id;
+
+    if (fid) {
+      try {
+        const info2 = await (client as any).files.info({ file: fid });
+        const p2 = info2?.file?.permalink;
+        if (p2) {
+          await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: `📎 PDF (fallback): ${p2}` });
+        }
+      } catch {}
+    }
+
     await client.chat.update({ channel: channel_id, ts: progress_ts, text: "✅ Done: PDF posted in this thread. (fallback)" });
     return;
   }
 
-  // Step 7: success (primary), also post permalink to ensure visibility
+  // Step 7: success (primary) — also post permalink so it’s visible even if card is delayed
   if (permalink) {
     await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: `📎 PDF: ${permalink}` });
   }
