@@ -9,11 +9,11 @@ const bolt_1 = require("@slack/bolt");
 const node_fetch_1 = __importDefault(require("node-fetch"));
 const pdf_lib_1 = require("pdf-lib");
 /**
- * ENV REQUIRED (in Render):
+ * ENV REQUIRED (Render):
  * - SLACK_BOT_TOKEN=xoxb-...
  * - SLACK_SIGNING_SECRET=...
  *
- * Scopes used (already in your app):
+ * Scopes used:
  * chat:write, commands, files:read, files:write, channels:history, groups:history, canvases:write, canvases:read
  */
 const receiver = new bolt_1.ExpressReceiver({
@@ -25,7 +25,6 @@ const bolt = new bolt_1.App({
     signingSecret: process.env.SLACK_SIGNING_SECRET,
     receiver
 });
-// ---------- Helpers ----------
 function verifySlackSig(req) {
     const ts = req.headers["x-slack-request-timestamp"];
     const sig = req.headers["x-slack-signature"];
@@ -60,7 +59,7 @@ app.post("/slack/commands", async (req, res) => {
         text: "Use the message shortcut *Collate thread to Canvas* on any message inside the thread that contains your images. (Slash commands don’t carry thread context.)"
     });
 });
-// ========== SHORTCUT A: Collate thread to Canvas ==========
+// ---------- Shortcut A: Collate thread to Canvas (unchanged) ----------
 bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
     await ack();
     try {
@@ -108,10 +107,9 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
         const channel_id = meta.channel_id;
         const thread_ts = meta.thread_ts;
         const category = (view.state.values.category_block.category_action.selected_option?.value || "other");
-        // Get replies
+        // fetch replies
         const replies = await client.conversations.replies({ channel: channel_id, ts: thread_ts, limit: 200 });
         const messages = replies.messages || [];
-        // Gather pairs
         const pairs = [];
         for (const m of messages) {
             const files = m.files;
@@ -134,7 +132,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
             await client.chat.postMessage({ channel: channel_id, thread_ts, text: "I didn’t find any images in this thread." });
             return;
         }
-        // Build markdown (Description → Image)
         const lines = [];
         lines.push(`# Collated — ${category}`, "");
         for (const p of pairs) {
@@ -143,7 +140,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
             lines.push(`![](${p.permalink})`, "", "---", "");
         }
         const markdown = lines.join("\n");
-        // Create canvas attached to channel
         const created = (await client.apiCall("canvases.create", {
             title: `Collated — ${category}`,
             channel_id: channel_id,
@@ -164,149 +160,27 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
         (logger || console).error("modal submit error:", e?.data || e?.message || e);
     }
 });
-// ========== SHORTCUT B: Export thread as PDF (2-column print-optimized) ==========
+// ---------- Shortcut B: Export thread as PDF (TEMP: minimal test upload) ----------
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
     await ack();
     try {
-        const botToken = process.env.SLACK_BOT_TOKEN;
         const { channel, message_ts, thread_ts } = shortcut;
         const root_ts = thread_ts || message_ts;
         const channel_id = channel.id;
-        // Post a quick "working" note (so users see activity)
+        // Tell users we're working
         await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "Generating print-optimized PDF…" });
-        // 1) fetch replies
-        const replies = await client.conversations.replies({ channel: channel_id, ts: root_ts, limit: 200 });
-        const messages = replies.messages || [];
-        // 2) collect images with file IDs
-        const imgs = [];
-        for (const m of messages) {
-            const files = m.files;
-            if (!files || !files.length)
-                continue;
-            const caption = m.text?.trim() ||
-                (files[0]?.initial_comment?.comment?.trim?.() ?? "") ||
-                (files[0]?.title?.trim?.() ?? "");
-            for (const f of files) {
-                if (!/^image\//.test(f.mimetype || ""))
-                    continue;
-                imgs.push({ caption, fileId: f.id, mimetype: f.mimetype });
-            }
-        }
-        if (!imgs.length) {
-            await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "I didn’t find any images in this thread to export." });
-            return;
-        }
-        // 3) download helper
-        async function downloadBuffer(fileId) {
-            try {
-                const info = (await client.apiCall("files.info", { file: fileId }));
-                const url = info.file?.url_private_download || info.file?.url_private;
-                if (!url) {
-                    (logger || console).error("download: missing url_private*", { fileId });
-                    return null;
-                }
-                const res = await (0, node_fetch_1.default)(url, { headers: { Authorization: `Bearer ${botToken}` } });
-                if (!res.ok) {
-                    (logger || console).error("download: bad status", { fileId, status: res.status, statusText: res.statusText });
-                    return null;
-                }
-                const ab = await res.arrayBuffer();
-                return new Uint8Array(ab);
-            }
-            catch (err) {
-                (logger || console).error("download: fetch error", err?.message || err);
-                return null;
-            }
-        }
-        // 4) create PDF (Letter, portrait), two columns
+        // Create a tiny 1-page PDF
         const pdf = await pdf_lib_1.PDFDocument.create();
-        const font = await pdf.embedFont(pdf_lib_1.StandardFonts.Helvetica);
-        const pageW = 612, pageH = 792, margin = 36, gutter = 18;
-        const colW = (pageW - margin * 2 - gutter) / 2;
-        const captionSize = 10, lineHeight = captionSize + 2, maxCaptionLines = 6;
-        const captionBlockH = maxCaptionLines * lineHeight + 6;
-        const imageMaxH = 220;
-        const cellH = captionBlockH + imageMaxH + 12;
-        function addPage() {
-            const p = pdf.addPage([pageW, pageH]);
-            p.drawText("Print Export", { x: margin, y: pageH - margin + 6, size: 12, font, color: (0, pdf_lib_1.rgb)(0, 0, 0) });
-            return p;
-        }
-        let page = addPage();
-        let curY = pageH - margin - 18;
-        let col = 0;
-        function wrapText(text, maxWidth, maxLines) {
-            const words = text.replace(/\r/g, "").split(/\s+/);
-            const lines = [];
-            let cur = "";
-            for (const w of words) {
-                const test = cur ? cur + " " + w : w;
-                if (font.widthOfTextAtSize(test, captionSize) <= maxWidth)
-                    cur = test;
-                else {
-                    lines.push(cur);
-                    cur = w;
-                    if (lines.length >= maxLines - 1)
-                        break;
-                }
-            }
-            if (cur)
-                lines.push(cur);
-            return lines.slice(0, maxLines);
-        }
-        for (const it of imgs) {
-            const x = margin + (col === 0 ? 0 : colW + gutter);
-            if (curY - cellH < margin) {
-                page = addPage();
-                curY = pageH - margin - 18;
-                col = 0;
-            }
-            // caption first
-            const wrapped = wrapText(it.caption || "", colW, maxCaptionLines);
-            let textY = curY - lineHeight;
-            for (const line of wrapped) {
-                page.drawText(line, { x, y: textY, size: captionSize, font, color: (0, pdf_lib_1.rgb)(0, 0, 0) });
-                textY -= lineHeight;
-            }
-            const afterCaptionY = textY - 6;
-            // image
-            const buf = await downloadBuffer(it.fileId);
-            if (buf) {
-                let img = null;
-                try {
-                    img = await pdf.embedJpg(buf);
-                }
-                catch { }
-                if (!img) {
-                    try {
-                        img = await pdf.embedPng(buf);
-                    }
-                    catch { }
-                }
-                if (img) {
-                    const iw = img.width, ih = img.height;
-                    const scale = Math.min(colW / iw, imageMaxH / ih);
-                    const w = iw * scale, h = ih * scale;
-                    page.drawImage(img, { x, y: afterCaptionY - h, width: w, height: h });
-                }
-                else {
-                    page.drawText("[unsupported image format]", { x, y: afterCaptionY - lineHeight, size: captionSize, font, color: (0, pdf_lib_1.rgb)(0.4, 0, 0) });
-                }
-            }
-            else {
-                page.drawText("[failed to download image]", { x, y: afterCaptionY - lineHeight, size: captionSize, font, color: (0, pdf_lib_1.rgb)(0.4, 0, 0) });
-            }
-            if (col === 0)
-                col = 1;
-            else {
-                col = 0;
-                curY = afterCaptionY - imageMaxH - 12;
-            }
-        }
+        const page = pdf.addPage([612, 792]); // US Letter
+        const font = await pdf.embedFont(pdf_lib_1.StandardFonts.HelveticaBold);
+        page.drawText("Collate to Canvas — Test PDF", { x: 72, y: 720, size: 18, font, color: (0, pdf_lib_1.rgb)(0, 0, 0) });
         const pdfBytes = await pdf.save();
-        const filename = `PrintExport_${new Date().toISOString().slice(0, 10)}.pdf`;
-        // 5) Upload via new external upload flow
-        const up = (await client.apiCall("files.getUploadURLExternal", { filename, length: pdfBytes.length }));
+        const filename = `TestExport_${new Date().toISOString().slice(0, 10)}.pdf`;
+        // Upload via external upload flow
+        const up = (await client.apiCall("files.getUploadURLExternal", {
+            filename,
+            length: pdfBytes.length
+        }));
         if (!up?.ok) {
             (logger || console).error("getUploadURLExternal failed:", up);
             await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "⚠️ PDF upload init failed." });
@@ -314,7 +188,11 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
         }
         const upload_url = up.upload_url;
         const file_id = up.file_id;
-        const putRes = await (0, node_fetch_1.default)(upload_url, { method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: Buffer.from(pdfBytes) });
+        const putRes = await (0, node_fetch_1.default)(upload_url, {
+            method: "PUT",
+            headers: { "Content-Type": "application/octet-stream" },
+            body: Buffer.from(pdfBytes)
+        });
         if (!putRes.ok) {
             (logger || console).error("PUT upload failed", { status: putRes.status, statusText: putRes.statusText });
             await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "⚠️ PDF upload transfer failed." });
@@ -323,21 +201,12 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
         await client.apiCall("files.completeUploadExternal", {
             files: [{ id: file_id, title: filename }],
             channel_id: channel_id,
-            initial_comment: `📄 Print-optimized PDF ready (${imgs.length} photos).`,
+            initial_comment: `📄 Test PDF ready.`,
             thread_ts: root_ts
         });
     }
     catch (e) {
-        (logger || console).error("export_pdf error:", e?.data || e?.message || e);
-        // Let users know something went wrong
-        try {
-            const { channel, message_ts, thread_ts } = (e && e.shortcut) || {};
-            const root_ts = thread_ts || message_ts;
-            if (channel?.id && root_ts) {
-                await bolt.client.chat.postMessage({ channel: channel.id, thread_ts: root_ts, text: "⚠️ Export failed." });
-            }
-        }
-        catch { }
+        (logger || console).error("export_pdf test error:", e?.data || e?.message || e);
     }
 });
 (async () => {
