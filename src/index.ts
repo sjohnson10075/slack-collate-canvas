@@ -59,19 +59,44 @@ app.post("/slack/commands", async (req, res) => {
   });
 });
 
+// Helper: download original bytes using bot token
+async function downloadBufferById(client: any, botToken: string, fileId: string): Promise<Buffer | null> {
+  try {
+    const info = (await client.apiCall("files.info", { file: fileId })) as any;
+    const url = info.file?.url_private_download || info.file?.url_private;
+    if (!url) return null;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${botToken}` } } as any);
+    if (!res.ok) return null;
+    const ab = await res.arrayBuffer();
+    return Buffer.from(ab);
+  } catch {
+    return null;
+  }
+}
+
+// Helper: compress to ~800px JPG (good for Canvas)
+async function compressForCanvas(buf: Buffer): Promise<Buffer> {
+  return await sharp(buf)
+    .rotate()
+    .resize({ width: 800, height: 800, fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 75, chromaSubsampling: "4:2:0", mozjpeg: true })
+    .toBuffer();
+}
+
 // ========== SHORTCUT A: Collate thread to Canvas ==========
 bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
   await ack();
   try {
     const { channel, message_ts, thread_ts, trigger_id } = shortcut as any;
     const root_ts = thread_ts || message_ts;
+    const channel_id = channel.id as string;
 
     await client.views.open({
       trigger_id,
       view: {
         type: "modal",
         callback_id: "collate_modal",
-        private_metadata: JSON.stringify({ channel_id: channel.id, thread_ts: root_ts }),
+        private_metadata: JSON.stringify({ channel_id, thread_ts: root_ts }),
         title: { type: "plain_text", text: "Collate to Canvas" },
         submit: { type: "plain_text", text: "Create Canvas" },
         close: { type: "plain_text", text: "Cancel" },
@@ -92,6 +117,21 @@ bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
                 { text: { type: "plain_text", text: "Other" }, value: "other" }
               ]
             }
+          },
+          {
+            type: "section",
+            block_id: "opts_block",
+            text: { type: "mrkdwn", text: "*Options*" },
+            accessory: {
+              type: "checkboxes",
+              action_id: "opts_action",
+              options: [
+                {
+                  text: { type: "mrkdwn", text: "Use compact images (smaller in Canvas)" },
+                  value: "compact"
+                }
+              ]
+            }
           }
         ]
       }
@@ -109,25 +149,66 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     const thread_ts = meta.thread_ts as string;
     const category = (view.state.values.category_block.category_action.selected_option?.value || "other") as string;
 
+    const compact = !!view.state.values?.opts_block?.opts_action?.selected_options?.find?.(
+      (o: any) => o.value === "compact"
+    );
+
     const replies = await client.conversations.replies({ channel: channel_id, ts: thread_ts, limit: 200 });
     const messages = replies.messages || [];
 
-    const pairs: { caption: string; permalink: string }[] = [];
+    type Pair = { caption: string; permalink: string };
+    const pairs: Pair[] = [];
+
+    const botToken = process.env.SLACK_BOT_TOKEN as string;
+
     for (const m of messages) {
       const files = (m as any).files as Array<any> | undefined;
       if (!files || !files.length) continue;
 
-      const caption =
+      const baseCaption =
         (m as any).text?.trim() ||
         (files[0]?.initial_comment?.comment?.trim?.() ?? "") ||
         (files[0]?.title?.trim?.() ?? "");
 
       for (const f of files) {
         if (!/^image\//.test(f.mimetype || "")) continue;
-        const info = (await client.apiCall("files.info", { file: f.id })) as any;
-        const permalink = info.file?.permalink as string;
-        if (!permalink) continue;
-        pairs.push({ caption, permalink });
+
+        if (!compact) {
+          // Use original file's permalink (renders large in Canvas)
+          const info = (await client.apiCall("files.info", { file: f.id })) as any;
+          const permalink = info.file?.permalink as string | undefined;
+          if (permalink) {
+            const caption = baseCaption || (info.file?.title?.trim?.() ?? "");
+            pairs.push({ caption, permalink });
+          }
+        } else {
+          // Compact mode: download → resize → upload small copy → use its permalink
+          const orig = await downloadBufferById(client, botToken, f.id);
+          if (!orig) continue;
+          let small: Buffer | null = null;
+          try { small = await compressForCanvas(orig); } catch { small = null; }
+          if (!small) continue;
+
+          // Upload the smaller copy to the same thread, without a comment (minimize noise)
+          const up = await (client as any).files.uploadV2({
+            channel_id,
+            thread_ts,
+            filename: `canvas_small_${Date.now()}.jpg`,
+            file: small,
+            content_type: "image/jpeg",
+            title: "Canvas preview"
+          });
+
+          // Get permalink of the uploaded small image
+          const fileId: string | undefined = up?.files?.[0]?.id || up?.file?.id;
+          if (!fileId) continue;
+          const info2 = await (client as any).files.info({ file: fileId });
+          const permalinkSmall: string | undefined = info2?.file?.permalink;
+          if (!permalinkSmall) continue;
+
+          const caption = baseCaption || (info2?.file?.title?.trim?.() ?? "");
+          pairs.push({ caption, permalink: permalinkSmall });
+        }
       }
     }
 
@@ -136,8 +217,8 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    // ---------- Canvas content (working image rendering) ----------
-    // Use standard Markdown image syntax with the file permalink (this renders in Canvas).
+    // ---------- Canvas content ----------
+    // Standard Markdown image syntax renders in Canvas.
     const lines: string[] = [];
     lines.push(`# Collated — ${category}`, "");
     for (const p of pairs) {
@@ -161,7 +242,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     await client.chat.postMessage({
       channel: channel_id,
       thread_ts,
-      text: `✅ Created a Canvas for *${category}*. Open the **Canvas** tab in this channel to view & edit.`
+      text: `✅ Created a Canvas for *${category}*${compact ? " (compact images)" : ""}. Open the **Canvas** tab in this channel to view & edit.`
     });
   } catch (e: any) {
     (logger || console).error("modal submit error:", e?.data || e?.message || e);
@@ -224,7 +305,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 
   async function compressToJpeg(buf: Buffer): Promise<Buffer> {
     return await sharp(buf)
-      .rotate() // respect EXIF
+      .rotate()
       .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
       .jpeg({ quality: 72, chromaSubsampling: "4:2:0", mozjpeg: true })
       .toBuffer();
