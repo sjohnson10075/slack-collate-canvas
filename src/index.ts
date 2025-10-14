@@ -59,19 +59,36 @@ app.post("/slack/commands", async (req, res) => {
   });
 });
 
+// Helper to pick a smaller thumbnail URL from Slack file.info
+function pickThumbURL(infoFile: any, desired: number = 480): string | null {
+  // Available keys often include: thumb_64, 80, 160, 360, 480, 720, 960, 1024
+  const sizes = [480, 360, 160, 80, 64, 720, 960, 1024]; // prefer smaller first
+  let best: string | null = null;
+  for (const s of sizes) {
+    const key = `thumb_${s}`;
+    if (infoFile?.[key]) {
+      best = infoFile[key];
+      if (s <= desired) return best; // as soon as we found ≤ desired width, use it
+    }
+  }
+  // fall back to any thumb we found, else null
+  return best ?? null;
+}
+
 // ========== SHORTCUT A: Collate thread to Canvas ==========
 bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
   await ack();
   try {
     const { channel, message_ts, thread_ts, trigger_id } = shortcut as any;
     const root_ts = thread_ts || message_ts;
+    const channel_id = channel.id as string;
 
     await client.views.open({
       trigger_id,
       view: {
         type: "modal",
         callback_id: "collate_modal",
-        private_metadata: JSON.stringify({ channel_id: channel.id, thread_ts: root_ts }),
+        private_metadata: JSON.stringify({ channel_id, thread_ts: root_ts }),
         title: { type: "plain_text", text: "Collate to Canvas" },
         submit: { type: "plain_text", text: "Create Canvas" },
         close: { type: "plain_text", text: "Cancel" },
@@ -112,12 +129,14 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     const replies = await client.conversations.replies({ channel: channel_id, ts: thread_ts, limit: 200 });
     const messages = replies.messages || [];
 
-    const pairs: { caption: string; permalink: string }[] = [];
+    type Pair = { caption: string; thumb: string; permalink: string };
+    const pairs: Pair[] = [];
+
     for (const m of messages) {
       const files = (m as any).files as Array<any> | undefined;
       if (!files || !files.length) continue;
 
-      const caption =
+      const baseCaption =
         (m as any).text?.trim() ||
         (files[0]?.initial_comment?.comment?.trim?.() ?? "") ||
         (files[0]?.title?.trim?.() ?? "");
@@ -125,9 +144,17 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       for (const f of files) {
         if (!/^image\//.test(f.mimetype || "")) continue;
         const info = (await client.apiCall("files.info", { file: f.id })) as any;
-        const permalink = info.file?.permalink as string;
-        if (!permalink) continue;
-        pairs.push({ caption, permalink });
+        const fileObj = info.file;
+        if (!fileObj) continue;
+
+        const permalink = fileObj.permalink as string | undefined;
+        const thumb = pickThumbURL(fileObj, 480) || fileObj.permalink_public || fileObj.permalink || null;
+
+        if (!thumb || !permalink) continue;
+
+        // Use per-file title if the message text was empty
+        const caption = baseCaption || (fileObj.title?.trim?.() ?? "");
+        pairs.push({ caption, thumb, permalink });
       }
     }
 
@@ -136,13 +163,14 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    // ---------- Canvas content with smaller images ----------
-    const IMG_WIDTH = 520; // adjust to 480/500/560 if you want
+    // ---------- Canvas content using Markdown thumbnails ----------
+    // Each image: small thumbnail that links to the full-size permalink.
+    // This renders in Canvas and prints smaller automatically.
     const lines: string[] = [];
     lines.push(`# Collated — ${category}`, "");
     for (const p of pairs) {
       if (p.caption) lines.push(p.caption, "");
-      lines.push(`<img src="${p.permalink}" width="${IMG_WIDTH}">`, "", "<hr/>", "");
+      lines.push(`[![](${p.thumb})](${p.permalink})`, "", "---", "");
     }
     const markdown = lines.join("\n");
 
@@ -294,7 +322,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
         page.drawText("[image processing failed]", { x, y: afterCaptionY - lineHeight, size: captionSize, font, color: rgb(0.4,0,0) });
       }
     } else {
-      page.drawText("[failed to download image]", { x, y: afterCaptionY - lineHeight, size: captionSize, font, color: rgb(0.4,0,0) });
+      page.drawText("[failed to download image]", { x, y: afterCaptionY - lineHeight, size: captionSize, font, color: rgb(0,0.2,0.6) });
     }
 
     if (i % 4 === 3) {
