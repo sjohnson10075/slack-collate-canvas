@@ -136,11 +136,13 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
+    // ---------- Canvas content with smaller images ----------
+    const IMG_WIDTH = 520; // adjust to 480/500/560 if you want
     const lines: string[] = [];
     lines.push(`# Collated — ${category}`, "");
     for (const p of pairs) {
       if (p.caption) lines.push(p.caption, "");
-      lines.push(`![](${p.permalink})`, "", "---", "");
+      lines.push(`<img src="${p.permalink}" width="${IMG_WIDTH}">`, "", "<hr/>", "");
     }
     const markdown = lines.join("\n");
 
@@ -222,7 +224,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 
   async function compressToJpeg(buf: Buffer): Promise<Buffer> {
     return await sharp(buf)
-      .rotate()
+      .rotate() // respect EXIF
       .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
       .jpeg({ quality: 72, chromaSubsampling: "4:2:0", mozjpeg: true })
       .toBuffer();
