@@ -59,7 +59,7 @@ app.post("/slack/commands", async (req, res) => {
   });
 });
 
-// Helper: download original bytes using bot token
+// Helpers
 async function downloadBufferById(client: any, botToken: string, fileId: string): Promise<Buffer | null> {
   try {
     const info = (await client.apiCall("files.info", { file: fileId })) as any;
@@ -74,7 +74,6 @@ async function downloadBufferById(client: any, botToken: string, fileId: string)
   }
 }
 
-// Helper: compress to ~800px JPG (good for Canvas)
 async function compressForCanvas(buf: Buffer): Promise<Buffer> {
   return await sharp(buf)
     .rotate()
@@ -174,7 +173,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
         if (!/^image\//.test(f.mimetype || "")) continue;
 
         if (!compact) {
-          // Use original file's permalink (renders large in Canvas)
+          // Original: use file permalink
           const info = (await client.apiCall("files.info", { file: f.id })) as any;
           const permalink = info.file?.permalink as string | undefined;
           if (permalink) {
@@ -182,14 +181,14 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
             pairs.push({ caption, permalink });
           }
         } else {
-          // Compact mode: download → resize → upload small copy → use its permalink
+          // Compact: download -> resize -> upload small -> use uploadV2's returned permalink
           const orig = await downloadBufferById(client, botToken, f.id);
           if (!orig) continue;
+
           let small: Buffer | null = null;
           try { small = await compressForCanvas(orig); } catch { small = null; }
           if (!small) continue;
 
-          // Upload the smaller copy to the same thread, without a comment (minimize noise)
           const up = await (client as any).files.uploadV2({
             channel_id,
             thread_ts,
@@ -197,28 +196,40 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
             file: small,
             content_type: "image/jpeg",
             title: "Canvas preview"
+            // no initial_comment to keep noise minimal
           });
 
-          // Get permalink of the uploaded small image
-          const fileId: string | undefined = up?.files?.[0]?.id || up?.file?.id;
-          if (!fileId) continue;
-          const info2 = await (client as any).files.info({ file: fileId });
-          const permalinkSmall: string | undefined = info2?.file?.permalink;
-          if (!permalinkSmall) continue;
+          const uploaded =
+            (up && (up.files?.[0] || up.file)) || null;
 
-          const caption = baseCaption || (info2?.file?.title?.trim?.() ?? "");
-          pairs.push({ caption, permalink: permalinkSmall });
+          let permalinkSmall: string | undefined = uploaded?.permalink;
+          // If the API didn’t include a permalink yet, wait briefly and fetch info.
+          if (!permalinkSmall && uploaded?.id) {
+            await new Promise(r => setTimeout(r, 800));
+            try {
+              const info2 = await (client as any).files.info({ file: uploaded.id });
+              permalinkSmall = info2?.file?.permalink;
+            } catch {/* ignore */}
+          }
+
+          if (permalinkSmall) {
+            const caption = baseCaption || (uploaded?.title?.trim?.() ?? "");
+            pairs.push({ caption, permalink: permalinkSmall });
+          }
         }
       }
     }
 
     if (!pairs.length) {
-      await client.chat.postMessage({ channel: channel_id, thread_ts, text: "I didn’t find any images in this thread." });
+      await client.chat.postMessage({
+        channel: channel_id,
+        thread_ts,
+        text: "I didn’t find any images I could include in the Canvas."
+      });
       return;
     }
 
     // ---------- Canvas content ----------
-    // Standard Markdown image syntax renders in Canvas.
     const lines: string[] = [];
     lines.push(`# Collated — ${category}`, "");
     for (const p of pairs) {
