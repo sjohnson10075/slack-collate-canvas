@@ -104,11 +104,10 @@ function deeplEndpointFromKey(k: string) {
     : "https://api.deepl.com/v2/translate";
 }
 async function translateEs(text: string): Promise<{ ok: boolean; es: string }> {
-  // Always return shape; never throw—keeps the workflows safe.
   if (!ADD_SPANISH) return { ok: false, es: "" };
   if (!DEEPL_API_KEY) return { ok: false, es: "" };
   const t = (text || "").trim();
-  if (!t) return { ok: true, es: "" }; // empty caption is "translated" to empty
+  if (!t) return { ok: true, es: "" };
   try {
     const body = new URLSearchParams({
       auth_key: DEEPL_API_KEY,
@@ -155,7 +154,7 @@ function findRootText(messages: any[], root_ts: string): string {
 }
 
 // =======================================================
-// SHORTCUT A: Collate thread to Canvas (GROUP BY MESSAGE) + optional Spanish
+// SHORTCUT A: Collate thread to Canvas (GROUP BY MESSAGE) + Spanish line BELOW English
 // =======================================================
 bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
   await ack();
@@ -215,7 +214,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
 
     type Group = { caption: string; captionEs?: string; filePermalinks: string[] };
     const groups: Group[] = [];
-    let attempted = 0, translated = 0;
 
     for (const m of messages) {
       const files = (m as any).files as Array<any> | undefined;
@@ -235,12 +233,8 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       if (permaList.length) {
         let captionEs: string | undefined = undefined;
         if (ADD_SPANISH) {
-          attempted++;
           const res = await translateEs(caption);
-          if (res.ok && res.es) {
-            translated++;
-            captionEs = res.es;
-          }
+          if (res.ok && res.es) captionEs = res.es;
         }
         groups.push({ caption, captionEs, filePermalinks: permaList });
       }
@@ -251,13 +245,15 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
+    // Canvas content — ensure Spanish is on a NEW LINE with a BLANK LINE between
     const lines: string[] = [];
     lines.push(`# ${canvasTitle}`, "");
     for (const g of groups) {
       if (g.caption) {
-        lines.push(g.caption);
-        if (ADD_SPANISH && g.captionEs) lines.push(`*ES:* ${g.captionEs}`);
-        lines.push("");
+        lines.push(g.caption, ""); // blank line after English
+        if (ADD_SPANISH && g.captionEs) {
+          lines.push(`*ES:* ${g.captionEs}`, ""); // Spanish line, then blank line
+        }
       }
       for (const link of g.filePermalinks) {
         lines.push(`![](${link})`, "");
@@ -278,28 +274,18 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    // Small diagnostic posted to the thread
-    if (ADD_SPANISH) {
-      await client.chat.postMessage({
-        channel: channel_id,
-        thread_ts,
-        text: `Canvas created. Spanish: attempted ${attempted}, translated ${translated}.`
-      });
-    } else {
-      await client.chat.postMessage({
-        channel: channel_id,
-        thread_ts,
-        text: `Canvas created. Spanish is OFF.`
-      });
-    }
-
+    await client.chat.postMessage({
+      channel: channel_id,
+      thread_ts,
+      text: `✅ Created a Canvas: *${canvasTitle}*. Open the **Canvas** tab in this channel to view & edit.`
+    });
   } catch (e: any) {
     (logger || console).error("modal submit error:", e?.data || e?.message || e);
   }
 });
 
 // =======================================================
-// SHORTCUT B: Export thread as PDF (GROUP BY MESSAGE, 2-ACROSS GRID, AUTO TITLE, + optional Spanish)
+// SHORTCUT B: Export thread as PDF (no running header; title only on page 1)
 // =======================================================
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   await ack();
@@ -308,10 +294,10 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const root_ts = thread_ts || message_ts;
   const channel_id = channel.id as string;
 
-  const startMsg = await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "Step 0/5: Starting export…" });
+  const startMsg = await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "Step 0/4: Starting export…" });
   const progress_ts = (startMsg as any).ts as string;
 
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 1/5: Reading thread…" });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 1/4: Reading thread…" });
   const replies = await client.conversations.replies({ channel: channel_id, ts: root_ts, limit: 200 });
   const messages = replies.messages || [];
 
@@ -320,10 +306,9 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const fileBase = sanitizeForFilename(rootText || `PrintExport_${new Date().toISOString().slice(0, 10)}`);
   const filename = `${fileBase}.pdf`;
 
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 2/5: Grouping images by message…" });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 2/4: Grouping images by message…" });
   type Group = { caption: string; captionEs?: string; fileIds: string[] };
   const groups: Group[] = [];
-  let attempted = 0, translated = 0;
 
   for (const m of messages) {
     const files = (m as any).files as Array<any> | undefined;
@@ -342,12 +327,8 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     if (fileIds.length) {
       let captionEs: string | undefined = undefined;
       if (ADD_SPANISH) {
-        attempted++;
         const res = await translateEs(caption);
-        if (res.ok && res.es) {
-          translated++;
-          captionEs = res.es;
-        }
+        if (res.ok && res.es) captionEs = res.es;
       }
       groups.push({ caption, captionEs, fileIds });
     }
@@ -357,7 +338,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     return;
   }
 
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/5: Building PDF… (Spanish ${ADD_SPANISH ? "ON" : "OFF"})` });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/4: Building PDF…` });
 
   const pdf = await PDFDocument.create();
   pdf.setTitle(niceTitle);
@@ -370,7 +351,6 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const gutter = 16;
 
   const titleSize = 14;
-  const headerSize = 9;
   const captionSize = 11;
   const captionEsSize = 10;
   const lineH = captionSize + 3;
@@ -381,16 +361,22 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const tileW = Math.floor((contentW - gutter) / 2);
   const tileHMax = 240;
 
-  let page = pdf.addPage([pageW, pageH]);
-  let y = pageH - margin;
+  function addPageNoHeader() {
+    const p = pdf.addPage([pageW, pageH]);
+    return p;
+  }
 
+  // First page with big title only
+  let page = addPageNoHeader();
+  let y = pageH - margin;
   page.drawText(niceTitle, { x: margin, y: y - titleSize, size: titleSize, font: fontBold, color: rgb(0,0,0) });
   y -= (titleSize + 10);
 
-  function addPageWithHeader() {
-    page = pdf.addPage([pageW, pageH]);
-    page.drawText(niceTitle, { x: margin, y: pageH - margin + 2, size: headerSize, font, color: rgb(0.25,0.25,0.25) });
-    y = pageH - margin - 12;
+  function ensureSpace(required: number) {
+    if (y - required < margin) {
+      page = addPageNoHeader();
+      y = pageH - margin; // no running header; full top margin available
+    }
   }
 
   function wrap(text: string, maxWidth: number, size: number, maxLines: number): string[] {
@@ -428,10 +414,6 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
       page.drawText("[image error]", { x, y: topY - lineH, size: captionSize, font, color: rgb(0.4,0,0) });
       return tileHMax;
     }
-  }
-
-  function ensureSpace(required: number) {
-    if (y - required < margin) addPageWithHeader();
   }
 
   for (const g of groups) {
@@ -473,13 +455,13 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
       y -= (rowH + 14);
     }
 
-    y -= 10;
+    y -= 10; // gap between groups
   }
 
   const pdfBytes = await pdf.save();
   const bodyBuf = Buffer.from(pdfBytes);
 
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 4/5: Uploading PDF… (Spanish attempted ${attempted}, translated ${translated})` });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 4/4: Uploading PDF…" });
 
   const up2 = await (client as any).files.uploadV2({
     channel_id,
@@ -496,7 +478,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     return;
   }
 
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `✅ Done: PDF posted in this thread. Spanish attempted ${attempted}, translated ${translated}.` });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "✅ Done: PDF posted in this thread." });
 });
 
 (async () => {
