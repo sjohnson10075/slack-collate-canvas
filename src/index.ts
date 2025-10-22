@@ -177,7 +177,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     }
 
     // Canvas content: Caption once, then ALL images from that message.
-    // Add blank lines between images to force inline rendering, then a divider.
     const lines: string[] = [];
     lines.push(`# Collated — ${category}`, "");
     for (const g of groups) {
@@ -275,17 +274,15 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const maxCaptionLines = 8;
 
   // Grid (two across)
-  const tileW = Math.floor((contentW - gutter) / 2); // width of each image tile
-  const tileHMax = 240; // max height reserved per image slot
+  const tileW = Math.floor((contentW - gutter) / 2);
+  const tileHMax = 240;
 
   function addPage() {
-    const p = pdf.addPage([pageW, pageH]);
-    p.drawText("Print Export", { x: margin, y: pageH - margin + 6, size: 12, font, color: rgb(0,0,0) });
-    return p;
+    return pdf.addPage([pageW, pageH]);
   }
 
   let page = addPage();
-  let y = pageH - margin - 18; // current writing y (top-down)
+  let y = pageH - margin; // top usable area
 
   function wrap(text: string, maxWidth: number, maxLines: number): string[] {
     const words = (text || "").replace(/\r/g, "").split(/\s+/);
@@ -311,7 +308,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
       return tileHMax;
     }
     try {
-      const jpg = await compressToJpeg(orig, 1800); // good quality for print
+      const jpg = await compressToJpeg(orig, 1800);
       const img = await pdf.embedJpg(jpg);
       const iw = img.width, ih = img.height;
       const scale = Math.min(tileW / iw, tileHMax / ih);
@@ -327,25 +324,31 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   function ensureSpace(required: number) {
     if (y - required < margin) {
       page = addPage();
-      y = pageH - margin - 18;
+      y = pageH - margin;
     }
   }
 
   for (const g of groups) {
-    // ---- Caption
+    // Measure caption height
     const lines = wrap(g.caption || "", contentW, maxCaptionLines);
-    const capHeight = lines.length * lineHeight + 6;
-    ensureSpace(capHeight);
-    let capY = y - lineHeight;
-    for (const line of lines) {
-      page.drawText(line, { x: margin, y: capY, size: captionSize, font, color: rgb(0,0,0) });
-      capY -= lineHeight;
+    const capHeight = (lines.length ? lines.length * lineHeight + 6 : 0);
+    // Require room for caption + at least ONE image row (if there are images)
+    const firstRow = g.fileIds.length ? (tileHMax + 14) : 0;
+    ensureSpace(capHeight + firstRow);
+
+    // ---- Caption
+    if (capHeight) {
+      let capY = y - lineHeight;
+      for (const line of lines) {
+        page.drawText(line, { x: margin, y: capY, size: captionSize, font, color: rgb(0,0,0) });
+        capY -= lineHeight;
+      }
+      y = capY - 6;
     }
-    y = capY - 6;
 
     // ---- Images in 2-across grid
     for (let i = 0; i < g.fileIds.length; i += 2) {
-      // Estimate required block height (tile row)
+      // Make sure a full row fits
       ensureSpace(tileHMax + 14);
 
       // left tile
