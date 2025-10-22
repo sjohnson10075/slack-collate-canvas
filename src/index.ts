@@ -91,6 +91,24 @@ async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
     .toBuffer();
 }
 
+// Root title helpers
+function sanitizeForFilename(s: string, max = 80): string {
+  const cleaned = (s || "Export")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (cleaned || "Export").slice(0, max);
+}
+function shortTitle(s: string, max = 120): string {
+  const t = (s || "Export").replace(/\s+/g, " ").trim();
+  return (t || "Export").slice(0, max);
+}
+function findRootText(messages: any[], root_ts: string): string {
+  const root = messages.find((m: any) => m.ts === root_ts) || messages[0];
+  const t = (root?.text || "").toString();
+  return t.trim();
+}
+
 // =======================================================
 // SHORTCUT A: Collate thread to Canvas (GROUP BY MESSAGE)
 // =======================================================
@@ -148,6 +166,10 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     const replies = await client.conversations.replies({ channel: channel_id, ts: thread_ts, limit: 200 });
     const messages = replies.messages || [];
 
+    // Title from root message
+    const rootText = findRootText(messages, thread_ts);
+    const canvasTitle = shortTitle(rootText || `Collated — ${category}`);
+
     // Group by message: one caption, many images
     type Group = { caption: string; filePermalinks: string[] };
     const groups: Group[] = [];
@@ -176,20 +198,20 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    // Canvas content: Caption once, then ALL images from that message.
+    // Canvas content: caption once, then ALL images from that message
     const lines: string[] = [];
-    lines.push(`# Collated — ${category}`, "");
+    lines.push(`# ${canvasTitle}`, "");
     for (const g of groups) {
       if (g.caption) lines.push(g.caption, "");
       for (const link of g.filePermalinks) {
-        lines.push(`![](${link})`, ""); // blank line after each image
+        lines.push(`![](${link})`, "");
       }
       lines.push("---", "");
     }
     const markdown = lines.join("\n");
 
     const created = (await client.apiCall("canvases.create", {
-      title: `Collated — ${category}`,
+      title: canvasTitle,
       channel_id: channel_id,
       document_content: { type: "markdown", markdown }
     })) as any;
@@ -203,7 +225,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     await client.chat.postMessage({
       channel: channel_id,
       thread_ts,
-      text: `✅ Created a Canvas for *${category}*. Open the **Canvas** tab in this channel to view & edit.`
+      text: `✅ Created a Canvas: *${canvasTitle}*. Open the **Canvas** tab in this channel to view & edit.`
     });
   } catch (e: any) {
     (logger || console).error("modal submit error:", e?.data || e?.message || e);
@@ -211,7 +233,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
 });
 
 // =======================================================
-// SHORTCUT B: Export thread as PDF (GROUP BY MESSAGE, 2-ACROSS GRID)
+// SHORTCUT B: Export thread as PDF (GROUP BY MESSAGE, 2-ACROSS GRID, AUTO TITLE)
 // =======================================================
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   await ack();
@@ -228,6 +250,12 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 1/4: Reading thread…" });
   const replies = await client.conversations.replies({ channel: channel_id, ts: root_ts, limit: 200 });
   const messages = replies.messages || [];
+
+  // Derive title from root message
+  const rootText = findRootText(messages, root_ts);
+  const niceTitle = shortTitle(rootText || "Print Export");
+  const fileBase = sanitizeForFilename(rootText || `PrintExport_${new Date().toISOString().slice(0, 10)}`);
+  const filename = `${fileBase}.pdf`;
 
   // Step 2: collect groups (caption once, many fileIds)
   await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 2/4: Grouping images by message…" });
@@ -370,19 +398,18 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 
   const pdfBytes = await pdf.save();
   const bodyBuf = Buffer.from(pdfBytes);
-  const filename = `PrintExport_${new Date().toISOString().slice(0, 10)}.pdf`;
 
-  // Step 4: upload via files.uploadV2 (multipart)
+  // Step 4: upload via files.uploadV2 (multipart) — use derived title/filename
   await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 4/4: Uploading PDF…" });
 
   const up2 = await (client as any).files.uploadV2({
     channel_id,
     thread_ts: root_ts,
     filename,
-    initial_comment: `📄 Print-optimized PDF ready.`,
+    initial_comment: `📄 ${niceTitle}`,
     file: bodyBuf,
     content_type: "application/pdf",
-    title: filename
+    title: niceTitle
   });
 
   if (!up2?.ok) {
