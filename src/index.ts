@@ -10,6 +10,10 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
  * - SLACK_BOT_TOKEN=xoxb-...
  * - SLACK_SIGNING_SECRET=...
  *
+ * Optional (safe):
+ * - ADD_SPANISH=1              -> turn on Spanish translation
+ * - DEEPL_API_KEY=...          -> DeepL API key (Free or Pro)
+ *
  * Scopes used:
  * chat:write, commands, files:read, files:write, channels:history, groups:history, canvases:write, canvases:read
  */
@@ -91,6 +95,47 @@ async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
     .toBuffer();
 }
 
+// --- Optional Spanish translation (DeepL) ---
+const ADD_SPANISH = (process.env.ADD_SPANISH || "") === "1";
+const DEEPL_API_KEY = process.env.DEEPL_API_KEY || "";
+function deeplEndpointFromKey(k: string) {
+  return k && k.includes(":fx")
+    ? "https://api-free.deepl.com/v2/translate"
+    : "https://api.deepl.com/v2/translate";
+}
+async function translateEs(text: string): Promise<{ ok: boolean; es: string }> {
+  // Always return shape; never throw—keeps the workflows safe.
+  if (!ADD_SPANISH) return { ok: false, es: "" };
+  if (!DEEPL_API_KEY) return { ok: false, es: "" };
+  const t = (text || "").trim();
+  if (!t) return { ok: true, es: "" }; // empty caption is "translated" to empty
+  try {
+    const body = new URLSearchParams({
+      auth_key: DEEPL_API_KEY,
+      text: t,
+      target_lang: "ES",
+      preserve_formatting: "1"
+    });
+    const res = await fetch(deeplEndpointFromKey(DEEPL_API_KEY), {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body as any
+    } as any);
+    if (!res.ok) {
+      console.log("[deepl] HTTP", res.status, res.statusText);
+      return { ok: false, es: "" };
+    }
+    const data = await res.json();
+    const translated = data?.translations?.[0]?.text;
+    if (typeof translated === "string") return { ok: true, es: translated };
+    console.log("[deepl] unexpected payload", data);
+    return { ok: false, es: "" };
+  } catch (e: any) {
+    console.log("[deepl] error", e?.message || e);
+    return { ok: false, es: "" };
+  }
+}
+
 // Root title helpers
 function sanitizeForFilename(s: string, max = 80): string {
   const cleaned = (s || "Export")
@@ -110,7 +155,7 @@ function findRootText(messages: any[], root_ts: string): string {
 }
 
 // =======================================================
-// SHORTCUT A: Collate thread to Canvas (GROUP BY MESSAGE)
+// SHORTCUT A: Collate thread to Canvas (GROUP BY MESSAGE) + optional Spanish
 // =======================================================
 bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
   await ack();
@@ -162,17 +207,15 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     const thread_ts = meta.thread_ts as string;
     const category = (view.state.values.category_block.category_action.selected_option?.value || "other") as string;
 
-    // Read thread
     const replies = await client.conversations.replies({ channel: channel_id, ts: thread_ts, limit: 200 });
     const messages = replies.messages || [];
 
-    // Title from root message
     const rootText = findRootText(messages, thread_ts);
     const canvasTitle = shortTitle(rootText || `Collated — ${category}`);
 
-    // Group by message: one caption, many images
-    type Group = { caption: string; filePermalinks: string[] };
+    type Group = { caption: string; captionEs?: string; filePermalinks: string[] };
     const groups: Group[] = [];
+    let attempted = 0, translated = 0;
 
     for (const m of messages) {
       const files = (m as any).files as Array<any> | undefined;
@@ -189,8 +232,18 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
         const perma = await fetchFilePermalink(client, f.id);
         if (perma) permaList.push(perma);
       }
-
-      if (permaList.length) groups.push({ caption, filePermalinks: permaList });
+      if (permaList.length) {
+        let captionEs: string | undefined = undefined;
+        if (ADD_SPANISH) {
+          attempted++;
+          const res = await translateEs(caption);
+          if (res.ok && res.es) {
+            translated++;
+            captionEs = res.es;
+          }
+        }
+        groups.push({ caption, captionEs, filePermalinks: permaList });
+      }
     }
 
     if (!groups.length) {
@@ -198,11 +251,14 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    // Canvas content
     const lines: string[] = [];
     lines.push(`# ${canvasTitle}`, "");
     for (const g of groups) {
-      if (g.caption) lines.push(g.caption, "");
+      if (g.caption) {
+        lines.push(g.caption);
+        if (ADD_SPANISH && g.captionEs) lines.push(`*ES:* ${g.captionEs}`);
+        lines.push("");
+      }
       for (const link of g.filePermalinks) {
         lines.push(`![](${link})`, "");
       }
@@ -222,18 +278,28 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    await client.chat.postMessage({
-      channel: channel_id,
-      thread_ts,
-      text: `✅ Created a Canvas: *${canvasTitle}*. Open the **Canvas** tab in this channel to view & edit.`
-    });
+    // Small diagnostic posted to the thread
+    if (ADD_SPANISH) {
+      await client.chat.postMessage({
+        channel: channel_id,
+        thread_ts,
+        text: `Canvas created. Spanish: attempted ${attempted}, translated ${translated}.`
+      });
+    } else {
+      await client.chat.postMessage({
+        channel: channel_id,
+        thread_ts,
+        text: `Canvas created. Spanish is OFF.`
+      });
+    }
+
   } catch (e: any) {
     (logger || console).error("modal submit error:", e?.data || e?.message || e);
   }
 });
 
 // =======================================================
-// SHORTCUT B: Export thread as PDF (GROUP BY MESSAGE, 2-ACROSS GRID, AUTO TITLE + ON-PAGE HEADER)
+// SHORTCUT B: Export thread as PDF (GROUP BY MESSAGE, 2-ACROSS GRID, AUTO TITLE, + optional Spanish)
 // =======================================================
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   await ack();
@@ -242,25 +308,22 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const root_ts = thread_ts || message_ts;
   const channel_id = channel.id as string;
 
-  // Step 0
-  const startMsg = await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "Step 0/4: Starting export…" });
+  const startMsg = await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "Step 0/5: Starting export…" });
   const progress_ts = (startMsg as any).ts as string;
 
-  // Step 1: fetch replies
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 1/4: Reading thread…" });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 1/5: Reading thread…" });
   const replies = await client.conversations.replies({ channel: channel_id, ts: root_ts, limit: 200 });
   const messages = replies.messages || [];
 
-  // Derive title
   const rootText = findRootText(messages, root_ts);
   const niceTitle = shortTitle(rootText || "Export");
   const fileBase = sanitizeForFilename(rootText || `PrintExport_${new Date().toISOString().slice(0, 10)}`);
   const filename = `${fileBase}.pdf`;
 
-  // Step 2: collect groups
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 2/4: Grouping images by message…" });
-  type Group = { caption: string; fileIds: string[] };
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 2/5: Grouping images by message…" });
+  type Group = { caption: string; captionEs?: string; fileIds: string[] };
   const groups: Group[] = [];
+  let attempted = 0, translated = 0;
 
   for (const m of messages) {
     const files = (m as any).files as Array<any> | undefined;
@@ -276,22 +339,31 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
       if (!/^image\//.test(f.mimetype || "")) continue;
       fileIds.push(f.id);
     }
-    if (fileIds.length) groups.push({ caption, fileIds });
+    if (fileIds.length) {
+      let captionEs: string | undefined = undefined;
+      if (ADD_SPANISH) {
+        attempted++;
+        const res = await translateEs(caption);
+        if (res.ok && res.es) {
+          translated++;
+          captionEs = res.es;
+        }
+      }
+      groups.push({ caption, captionEs, fileIds });
+    }
   }
   if (!groups.length) {
     await client.chat.update({ channel: channel_id, ts: progress_ts, text: "No images found in this thread." });
     return;
   }
 
-  // Step 3: build PDF (Letter portrait, single column; 2-across grid)
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/4: Building PDF…` });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/5: Building PDF… (Spanish ${ADD_SPANISH ? "ON" : "OFF"})` });
 
   const pdf = await PDFDocument.create();
   pdf.setTitle(niceTitle);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-  // Page & layout
   const pageW = 612, pageH = 792;
   const margin = 36;
   const contentW = pageW - margin * 2;
@@ -300,8 +372,11 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const titleSize = 14;
   const headerSize = 9;
   const captionSize = 11;
-  const lineHeight = captionSize + 3;
+  const captionEsSize = 10;
+  const lineH = captionSize + 3;
+  const lineHes = captionEsSize + 2;
   const maxCaptionLines = 8;
+  const maxCaptionEsLines = 8;
 
   const tileW = Math.floor((contentW - gutter) / 2);
   const tileHMax = 240;
@@ -309,37 +384,22 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   let page = pdf.addPage([pageW, pageH]);
   let y = pageH - margin;
 
-  // Draw big title on page 1
-  const titleWidth = fontBold.widthOfTextAtSize(niceTitle, titleSize);
-  page.drawText(niceTitle, {
-    x: margin,
-    y: y - titleSize,
-    size: titleSize,
-    font: fontBold,
-    color: rgb(0, 0, 0)
-  });
-  y -= (titleSize + 10); // spacing under title
+  page.drawText(niceTitle, { x: margin, y: y - titleSize, size: titleSize, font: fontBold, color: rgb(0,0,0) });
+  y -= (titleSize + 10);
 
   function addPageWithHeader() {
     page = pdf.addPage([pageW, pageH]);
-    // running header (small, gray)
-    page.drawText(niceTitle, {
-      x: margin,
-      y: pageH - margin + 2, // just above content area
-      size: headerSize,
-      font,
-      color: rgb(0.25, 0.25, 0.25)
-    });
-    y = pageH - margin - 12; // leave a little space under header
+    page.drawText(niceTitle, { x: margin, y: pageH - margin + 2, size: headerSize, font, color: rgb(0.25,0.25,0.25) });
+    y = pageH - margin - 12;
   }
 
-  function wrap(text: string, maxWidth: number, maxLines: number): string[] {
+  function wrap(text: string, maxWidth: number, size: number, maxLines: number): string[] {
     const words = (text || "").replace(/\r/g, "").split(/\s+/);
     const lines: string[] = [];
     let cur = "";
     for (const w of words) {
       const test = cur ? cur + " " + w : w;
-      if (font.widthOfTextAtSize(test, captionSize) <= maxWidth) cur = test;
+      if (font.widthOfTextAtSize(test, size) <= maxWidth) cur = test;
       else {
         if (cur) lines.push(cur);
         cur = w;
@@ -351,9 +411,9 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   }
 
   async function drawTile(x: number, topY: number, fileId: string): Promise<number> {
-    const orig = await downloadOriginal(client, botToken, fileId);
+    const orig = await downloadOriginal(client, (process as any).env.SLACK_BOT_TOKEN as string, fileId);
     if (!orig) {
-      page.drawText("[download failed]", { x, y: topY - lineHeight, size: captionSize, font, color: rgb(0.4,0,0) });
+      page.drawText("[download failed]", { x, y: topY - lineH, size: captionSize, font, color: rgb(0.4,0,0) });
       return tileHMax;
     }
     try {
@@ -365,7 +425,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
       page.drawImage(img, { x, y: topY - h, width: w, height: h });
       return h;
     } catch {
-      page.drawText("[image error]", { x, y: topY - lineHeight, size: captionSize, font, color: rgb(0.4,0,0) });
+      page.drawText("[image error]", { x, y: topY - lineH, size: captionSize, font, color: rgb(0.4,0,0) });
       return tileHMax;
     }
   }
@@ -375,42 +435,51 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   }
 
   for (const g of groups) {
-    // measure caption
-    const lines = wrap(g.caption || "", contentW, maxCaptionLines);
-    const capHeight = (lines.length ? lines.length * lineHeight + 6 : 0);
-    const firstRow = g.fileIds.length ? (tileHMax + 14) : 0;
-    ensureSpace(capHeight + firstRow);
+    const capLines = wrap(g.caption || "", contentW, captionSize, maxCaptionLines);
+    const capHeight = (capLines.length ? capLines.length * lineH + 2 : 0);
 
-    // caption
+    const esLines = (ADD_SPANISH && g.captionEs ? wrap(g.captionEs, contentW, captionEsSize, maxCaptionEsLines) : []);
+    const esHeight = esLines.length ? esLines.length * lineHes + 6 : 0;
+
+    const firstRow = g.fileIds.length ? (tileHMax + 14) : 0;
+    ensureSpace(capHeight + esHeight + firstRow);
+
     if (capHeight) {
-      let capY = y - lineHeight;
-      for (const line of lines) {
-        page.drawText(line, { x: margin, y: capY, size: captionSize, font, color: rgb(0,0,0) });
-        capY -= lineHeight;
+      let yy = y - captionSize;
+      for (const line of capLines) {
+        page.drawText(line, { x: margin, y: yy, size: captionSize, font, color: rgb(0,0,0) });
+        yy -= lineH;
       }
-      y = capY - 6;
+      y = yy - 2;
     }
 
-    // images 2-across
+    if (esLines.length) {
+      let yy = y - captionEsSize;
+      for (const line of esLines) {
+        page.drawText(line, { x: margin, y: yy, size: captionEsSize, font, color: rgb(0.2,0.2,0.2) });
+        yy -= lineHes;
+      }
+      y = yy - 6;
+    }
+
     for (let i = 0; i < g.fileIds.length; i += 2) {
       ensureSpace(tileHMax + 14);
       const hLeft = await drawTile(margin, y, g.fileIds[i]);
       let hRight = 0;
       if (i + 1 < g.fileIds.length) {
-        hRight = await drawTile(margin + tileW + gutter, y, g.fileIds[i + 1]);
+        hRight = await drawTile(margin + tileW + 16, y, g.fileIds[i + 1]);
       }
       const rowH = Math.max(hLeft, hRight);
       y -= (rowH + 14);
     }
 
-    y -= 10; // gap between groups
+    y -= 10;
   }
 
   const pdfBytes = await pdf.save();
   const bodyBuf = Buffer.from(pdfBytes);
 
-  // Step 4: upload via files.uploadV2
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 4/4: Uploading PDF…" });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 4/5: Uploading PDF… (Spanish attempted ${attempted}, translated ${translated})` });
 
   const up2 = await (client as any).files.uploadV2({
     channel_id,
@@ -427,10 +496,10 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     return;
   }
 
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: "✅ Done: PDF posted in this thread." });
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `✅ Done: PDF posted in this thread. Spanish attempted ${attempted}, translated ${translated}.` });
 });
 
 (async () => {
   await bolt.start(process.env.PORT || 3000);
-  console.log("⚡ Collate-to-Canvas running");
+  console.log("⚡ Collate-to-Canvas running | Spanish", ADD_SPANISH ? "ON" : "OFF", "| Key", DEEPL_API_KEY ? "present" : "absent");
 })();
