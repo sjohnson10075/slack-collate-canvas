@@ -85,7 +85,7 @@ async function downloadOriginal(client: any, botToken: string, fileId: string): 
 
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
   return await sharp(buf)
-    .rotate() // respect EXIF
+    .rotate()
     .resize({ width: max, height: max, fit: "inside", withoutEnlargement: true })
     .jpeg({ quality: 72, chromaSubsampling: "4:2:0", mozjpeg: true })
     .toBuffer();
@@ -198,7 +198,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    // Canvas content: caption once, then ALL images from that message
+    // Canvas content
     const lines: string[] = [];
     lines.push(`# ${canvasTitle}`, "");
     for (const g of groups) {
@@ -233,7 +233,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
 });
 
 // =======================================================
-// SHORTCUT B: Export thread as PDF (GROUP BY MESSAGE, 2-ACROSS GRID, AUTO TITLE)
+// SHORTCUT B: Export thread as PDF (GROUP BY MESSAGE, 2-ACROSS GRID, AUTO TITLE + ON-PAGE HEADER)
 // =======================================================
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   await ack();
@@ -242,7 +242,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const root_ts = thread_ts || message_ts;
   const channel_id = channel.id as string;
 
-  // Step 0: start
+  // Step 0
   const startMsg = await client.chat.postMessage({ channel: channel_id, thread_ts: root_ts, text: "Step 0/4: Starting export…" });
   const progress_ts = (startMsg as any).ts as string;
 
@@ -251,15 +251,14 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const replies = await client.conversations.replies({ channel: channel_id, ts: root_ts, limit: 200 });
   const messages = replies.messages || [];
 
-  // Derive title from root message
+  // Derive title
   const rootText = findRootText(messages, root_ts);
-  const niceTitle = shortTitle(rootText || "Print Export");
+  const niceTitle = shortTitle(rootText || "Export");
   const fileBase = sanitizeForFilename(rootText || `PrintExport_${new Date().toISOString().slice(0, 10)}`);
   const filename = `${fileBase}.pdf`;
 
-  // Step 2: collect groups (caption once, many fileIds)
+  // Step 2: collect groups
   await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 2/4: Grouping images by message…" });
-
   type Group = { caption: string; fileIds: string[] };
   const groups: Group[] = [];
 
@@ -284,33 +283,55 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     return;
   }
 
-  // Step 3: build PDF (Letter portrait, SINGLE column; per message = caption + 2-across image grid)
+  // Step 3: build PDF (Letter portrait, single column; 2-across grid)
   await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/4: Building PDF…` });
 
   const pdf = await PDFDocument.create();
+  pdf.setTitle(niceTitle);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-  // Page & layout (single column)
+  // Page & layout
   const pageW = 612, pageH = 792;
   const margin = 36;
   const contentW = pageW - margin * 2;
   const gutter = 16;
 
-  // Caption
+  const titleSize = 14;
+  const headerSize = 9;
   const captionSize = 11;
   const lineHeight = captionSize + 3;
   const maxCaptionLines = 8;
 
-  // Grid (two across)
   const tileW = Math.floor((contentW - gutter) / 2);
   const tileHMax = 240;
 
-  function addPage() {
-    return pdf.addPage([pageW, pageH]);
-  }
+  let page = pdf.addPage([pageW, pageH]);
+  let y = pageH - margin;
 
-  let page = addPage();
-  let y = pageH - margin; // top usable area
+  // Draw big title on page 1
+  const titleWidth = fontBold.widthOfTextAtSize(niceTitle, titleSize);
+  page.drawText(niceTitle, {
+    x: margin,
+    y: y - titleSize,
+    size: titleSize,
+    font: fontBold,
+    color: rgb(0, 0, 0)
+  });
+  y -= (titleSize + 10); // spacing under title
+
+  function addPageWithHeader() {
+    page = pdf.addPage([pageW, pageH]);
+    // running header (small, gray)
+    page.drawText(niceTitle, {
+      x: margin,
+      y: pageH - margin + 2, // just above content area
+      size: headerSize,
+      font,
+      color: rgb(0.25, 0.25, 0.25)
+    });
+    y = pageH - margin - 12; // leave a little space under header
+  }
 
   function wrap(text: string, maxWidth: number, maxLines: number): string[] {
     const words = (text || "").replace(/\r/g, "").split(/\s+/);
@@ -350,21 +371,17 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   }
 
   function ensureSpace(required: number) {
-    if (y - required < margin) {
-      page = addPage();
-      y = pageH - margin;
-    }
+    if (y - required < margin) addPageWithHeader();
   }
 
   for (const g of groups) {
-    // Measure caption height
+    // measure caption
     const lines = wrap(g.caption || "", contentW, maxCaptionLines);
     const capHeight = (lines.length ? lines.length * lineHeight + 6 : 0);
-    // Require room for caption + at least ONE image row (if there are images)
     const firstRow = g.fileIds.length ? (tileHMax + 14) : 0;
     ensureSpace(capHeight + firstRow);
 
-    // ---- Caption
+    // caption
     if (capHeight) {
       let capY = y - lineHeight;
       for (const line of lines) {
@@ -374,32 +391,25 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
       y = capY - 6;
     }
 
-    // ---- Images in 2-across grid
+    // images 2-across
     for (let i = 0; i < g.fileIds.length; i += 2) {
-      // Make sure a full row fits
       ensureSpace(tileHMax + 14);
-
-      // left tile
       const hLeft = await drawTile(margin, y, g.fileIds[i]);
-
-      // right tile (if present)
       let hRight = 0;
       if (i + 1 < g.fileIds.length) {
         hRight = await drawTile(margin + tileW + gutter, y, g.fileIds[i + 1]);
       }
-
       const rowH = Math.max(hLeft, hRight);
       y -= (rowH + 14);
     }
 
-    // space between groups
-    y -= 10;
+    y -= 10; // gap between groups
   }
 
   const pdfBytes = await pdf.save();
   const bodyBuf = Buffer.from(pdfBytes);
 
-  // Step 4: upload via files.uploadV2 (multipart) — use derived title/filename
+  // Step 4: upload via files.uploadV2
   await client.chat.update({ channel: channel_id, ts: progress_ts, text: "Step 4/4: Uploading PDF…" });
 
   const up2 = await (client as any).files.uploadV2({
