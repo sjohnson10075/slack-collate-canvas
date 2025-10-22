@@ -83,10 +83,10 @@ async function downloadOriginal(client: any, botToken: string, fileId: string): 
   }
 }
 
-async function compressToJpeg(buf: Buffer): Promise<Buffer> {
+async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
   return await sharp(buf)
     .rotate() // respect EXIF
-    .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
+    .resize({ width: max, height: max, fit: "inside", withoutEnlargement: true })
     .jpeg({ quality: 72, chromaSubsampling: "4:2:0", mozjpeg: true })
     .toBuffer();
 }
@@ -156,7 +156,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       const files = (m as any).files as Array<any> | undefined;
       if (!files || !files.length) continue;
 
-      // caption from the message (or from first file metadata)
       const caption =
         (m as any).text?.trim() ||
         (files[0]?.initial_comment?.comment?.trim?.() ?? "") ||
@@ -169,9 +168,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
         if (perma) permaList.push(perma);
       }
 
-      if (permaList.length) {
-        groups.push({ caption, filePermalinks: permaList });
-      }
+      if (permaList.length) groups.push({ caption, filePermalinks: permaList });
     }
 
     if (!groups.length) {
@@ -179,15 +176,16 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    // Canvas content (Markdown): Caption once, then ALL images from that message
+    // Canvas content: Caption once, then ALL images from that message.
+    // Add blank lines between images to force inline rendering, then a divider.
     const lines: string[] = [];
     lines.push(`# Collated — ${category}`, "");
     for (const g of groups) {
       if (g.caption) lines.push(g.caption, "");
       for (const link of g.filePermalinks) {
-        lines.push(`![](${link})`);
+        lines.push(`![](${link})`, ""); // blank line after each image
       }
-      lines.push("", "---", "");
+      lines.push("---", "");
     }
     const markdown = lines.join("\n");
 
@@ -214,7 +212,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
 });
 
 // =======================================================
-// SHORTCUT B: Export thread as PDF (GROUP BY MESSAGE)
+// SHORTCUT B: Export thread as PDF (GROUP BY MESSAGE, 2-ACROSS GRID)
 // =======================================================
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   await ack();
@@ -259,22 +257,26 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     return;
   }
 
-  // Step 3: build PDF (Letter portrait, 2 columns)
-  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/4: Building PDF for ${groups.reduce((a,g)=>a+g.fileIds.length,0)} images…` });
+  // Step 3: build PDF (Letter portrait, SINGLE column; per message = caption + 2-across image grid)
+  await client.chat.update({ channel: channel_id, ts: progress_ts, text: `Step 3/4: Building PDF…` });
 
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
 
-  // Page & layout
-  const pageW = 612, pageH = 792, margin = 36, gutter = 18;
-  const colW = (pageW - margin * 2 - gutter) / 2;
-  const captionSize = 10, lineHeight = captionSize + 2, maxCaptionLines = 6;
-  const imageMaxH = 220;
+  // Page & layout (single column)
+  const pageW = 612, pageH = 792;
+  const margin = 36;
+  const contentW = pageW - margin * 2;
+  const gutter = 16;
 
-  // Heights
-  const captionBlockH = maxCaptionLines * lineHeight + 6;
-  const cellHFirst = captionBlockH + imageMaxH + 12; // first image under caption
-  const cellHNoCaption = imageMaxH + 12;             // subsequent images in same message
+  // Caption
+  const captionSize = 11;
+  const lineHeight = captionSize + 3;
+  const maxCaptionLines = 8;
+
+  // Grid (two across)
+  const tileW = Math.floor((contentW - gutter) / 2); // width of each image tile
+  const tileHMax = 240; // max height reserved per image slot
 
   function addPage() {
     const p = pdf.addPage([pageW, pageH]);
@@ -283,10 +285,9 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   }
 
   let page = addPage();
-  let curY = pageH - margin - 18;
-  let col = 0;
+  let y = pageH - margin - 18; // current writing y (top-down)
 
-  function wrapText(text: string, maxWidth: number, maxLines: number): string[] {
+  function wrap(text: string, maxWidth: number, maxLines: number): string[] {
     const words = (text || "").replace(/\r/g, "").split(/\s+/);
     const lines: string[] = [];
     let cur = "";
@@ -300,101 +301,68 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
       }
     }
     if (cur) lines.push(cur);
-    return lines.slice(0, maxLines);
+    return lines;
   }
 
-  // Draw one image scaled to fit the column width and imageMaxH
-  async function drawImageBelow(yTop: number, x: number, fileId: string): Promise<number> {
+  async function drawTile(x: number, topY: number, fileId: string): Promise<number> {
     const orig = await downloadOriginal(client, botToken, fileId);
     if (!orig) {
-      page.drawText("[failed to download image]", { x, y: yTop - lineHeight, size: captionSize, font, color: rgb(0.4,0,0) });
-      return yTop - (imageMaxH + 12);
+      page.drawText("[download failed]", { x, y: topY - lineHeight, size: captionSize, font, color: rgb(0.4,0,0) });
+      return tileHMax;
     }
     try {
-      const jpg = await compressToJpeg(orig);
+      const jpg = await compressToJpeg(orig, 1800); // good quality for print
       const img = await pdf.embedJpg(jpg);
       const iw = img.width, ih = img.height;
-      const scale = Math.min(colW / iw, imageMaxH / ih);
+      const scale = Math.min(tileW / iw, tileHMax / ih);
       const w = iw * scale, h = ih * scale;
-      page.drawImage(img, { x, y: yTop - h, width: w, height: h });
-      return yTop - (h + 12);
+      page.drawImage(img, { x, y: topY - h, width: w, height: h });
+      return h;
     } catch {
-      page.drawText("[image processing failed]", { x, y: yTop - lineHeight, size: captionSize, font, color: rgb(0.4,0,0) });
-      return yTop - (imageMaxH + 12);
+      page.drawText("[image error]", { x, y: topY - lineHeight, size: captionSize, font, color: rgb(0.4,0,0) });
+      return tileHMax;
     }
   }
 
-  // Column/page management
-  function ensureSpace(requiredH: number) {
-    if ((curY - requiredH) < margin) {
-      // next column or new page
-      if (col === 0) {
-        col = 1;
-        curY = pageH - margin - 18;
-      } else {
-        page = addPage();
-        col = 0;
-        curY = pageH - margin - 18;
-      }
+  function ensureSpace(required: number) {
+    if (y - required < margin) {
+      page = addPage();
+      y = pageH - margin - 18;
     }
   }
 
   for (const g of groups) {
-    const x = margin + (col === 0 ? 0 : colW + gutter);
-
-    // FIRST image (with caption)
-    ensureSpace(cellHFirst);
-
-    // caption (wrap)
-    const wrapped = wrapText(g.caption || "", colW, maxCaptionLines);
-    let captionY = curY - lineHeight;
-    for (const line of wrapped) {
-      page.drawText(line, { x, y: captionY, size: captionSize, font, color: rgb(0,0,0) });
-      captionY -= lineHeight;
+    // ---- Caption
+    const lines = wrap(g.caption || "", contentW, maxCaptionLines);
+    const capHeight = lines.length * lineHeight + 6;
+    ensureSpace(capHeight);
+    let capY = y - lineHeight;
+    for (const line of lines) {
+      page.drawText(line, { x: margin, y: capY, size: captionSize, font, color: rgb(0,0,0) });
+      capY -= lineHeight;
     }
-    let nextY = captionY - 6;
+    y = capY - 6;
 
-    if (g.fileIds.length) {
-      // draw first image under caption
-      nextY = await drawImageBelow(nextY, x, g.fileIds[0]);
-    }
+    // ---- Images in 2-across grid
+    for (let i = 0; i < g.fileIds.length; i += 2) {
+      // Estimate required block height (tile row)
+      ensureSpace(tileHMax + 14);
 
-    // SUBSEQUENT images in the same group (no caption; stack them below)
-    for (let idx = 1; idx < g.fileIds.length; idx++) {
-      // if not enough space, move to next column/page before drawing next image
-      ensureSpace(cellHNoCaption);
-      const x2 = margin + (col === 0 ? 0 : colW + gutter);
-      if (x2 !== x) {
-        // we changed column/page; reset x and Y for the continuing images
-        nextY = curY;
+      // left tile
+      const hLeft = await drawTile(margin, y, g.fileIds[i]);
+
+      // right tile (if present)
+      let hRight = 0;
+      if (i + 1 < g.fileIds.length) {
+        hRight = await drawTile(margin + tileW + gutter, y, g.fileIds[i + 1]);
       }
-      nextY = await drawImageBelow(nextY, x2, g.fileIds[idx]);
-      // update column tracker Y only if we stayed in the same column
-      curY = nextY;
+
+      const rowH = Math.max(hLeft, hRight);
+      y -= (rowH + 14);
     }
 
-    // After finishing this group, set curY for next group if we drew at least one image.
-    // If no images (edge case), just consume a minimal block to avoid overlap.
-    if (g.fileIds.length) {
-      curY = nextY;
-    } else {
-      curY = curY - (captionBlockH + 12);
-    }
-
-    // add a little spacing between groups
-    curY -= 12;
-
-    // if spacing pushes below margin, advance column/page
-    if (curY < margin) {
-      if (col === 0) {
-        col = 1;
-        curY = pageH - margin - 18;
-      } else {
-        page = addPage();
-        col = 0;
-        curY = pageH - margin - 18;
-      }
-    }
+    // space between groups
+    y -= 10;
   }
 
   const pdfBytes = await pdf.save();
