@@ -154,7 +154,7 @@ function findRootText(messages: any[], root_ts: string): string {
 }
 
 // =======================================================
-// SHORTCUT A: Collate thread to Canvas (GROUP BY MESSAGE) + Spanish line BELOW English
+// SHORTCUT A: Collate thread to Canvas (GROUP BY MESSAGE) + Spanish line BELOW English + NUMBERING
 // =======================================================
 bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
   await ack();
@@ -245,21 +245,21 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
       return;
     }
 
-    // Canvas content — ensure Spanish is on a NEW LINE with a BLANK LINE between
+    // Canvas content — NUMBERED, Spanish on new line with blank spacer
     const lines: string[] = [];
     lines.push(`# ${canvasTitle}`, "");
-    for (const g of groups) {
-      if (g.caption) {
-        lines.push(g.caption, ""); // blank line after English
-        if (ADD_SPANISH && g.captionEs) {
-          lines.push(`*ES:* ${g.captionEs}`, ""); // Spanish line, then blank line
-        }
+    groups.forEach((g, idx) => {
+      const num = idx + 1;
+      // Bold number + caption
+      lines.push(`**${num}.** ${g.caption}`, "");
+      if (ADD_SPANISH && g.captionEs) {
+        lines.push(`*ES:* ${g.captionEs}`, ""); // Spanish line then blank line
       }
       for (const link of g.filePermalinks) {
         lines.push(`![](${link})`, "");
       }
       lines.push("---", "");
-    }
+    });
     const markdown = lines.join("\n");
 
     const created = (await client.apiCall("canvases.create", {
@@ -285,7 +285,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
 });
 
 // =======================================================
-// SHORTCUT B: Export thread as PDF (no running header; title only on page 1)
+// SHORTCUT B: Export thread as PDF (title only on page 1) + NUMBERED groups
 // =======================================================
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   await ack();
@@ -366,11 +366,11 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     return p;
   }
 
-  // First page with big title only
+  // First page with big title only — add a little more space before first item
   let page = addPageNoHeader();
   let y = pageH - margin;
   page.drawText(niceTitle, { x: margin, y: y - titleSize, size: titleSize, font: fontBold, color: rgb(0,0,0) });
-  y -= (titleSize + 10);
+  y -= (titleSize + 20); // was 10; increased to 20 for a bigger gap
 
   function ensureSpace(required: number) {
     if (y - required < margin) {
@@ -416,8 +416,15 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     }
   }
 
-  for (const g of groups) {
-    const capLines = wrap(g.caption || "", contentW, captionSize, maxCaptionLines);
+  // NUMBERED groups + Spanish line under English
+  for (let idx = 0; idx < groups.length; idx++) {
+    const g = groups[idx];
+    const num = idx + 1;
+
+    // Prefix number to caption for wrapping
+    const captionNumbered = `${num}. ${g.caption || ""}`;
+
+    const capLines = wrap(captionNumbered, contentW, captionSize, maxCaptionLines);
     const capHeight = (capLines.length ? capLines.length * lineH + 2 : 0);
 
     const esLines = (ADD_SPANISH && g.captionEs ? wrap(g.captionEs, contentW, captionEsSize, maxCaptionEsLines) : []);
@@ -426,6 +433,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     const firstRow = g.fileIds.length ? (tileHMax + 14) : 0;
     ensureSpace(capHeight + esHeight + firstRow);
 
+    // English (numbered)
     if (capHeight) {
       let yy = y - captionSize;
       for (const line of capLines) {
@@ -435,6 +443,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
       y = yy - 2;
     }
 
+    // Spanish (below)
     if (esLines.length) {
       let yy = y - captionEsSize;
       for (const line of esLines) {
@@ -444,6 +453,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
       y = yy - 6;
     }
 
+    // Images (2-across)
     for (let i = 0; i < g.fileIds.length; i += 2) {
       ensureSpace(tileHMax + 14);
       const hLeft = await drawTile(margin, y, g.fileIds[i]);
