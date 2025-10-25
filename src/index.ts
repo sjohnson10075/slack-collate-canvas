@@ -183,10 +183,6 @@ function findRootText(messages: any[], root_ts: string): string {
 
 // =======================================================
 // SHORTCUT A: Collate thread to Canvas
-// - Groups by parent message
-// - Adds numbering
-// - Adds Spanish below English with blank line
-// - Uses thread root text as Canvas title
 // =======================================================
 bolt.shortcut("collate_thread", async ({ ack, shortcut, client, logger }) => {
   await ack();
@@ -340,10 +336,6 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
 
 // =======================================================
 // SHORTCUT B: Export thread as PDF
-// - Title once on page 1 (extra spacing below it)
-// - Numbered groups
-// - English caption then Spanish caption
-// - 2 images per row, compressed
 // =======================================================
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   await ack();
@@ -674,13 +666,14 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 
 // =======================================================
 // SHORTCUT C: FOLLOW-UP REMINDER
-// - User triggers "Follow-up reminder" on a message
-// - Chooses timing
-// - We schedule a future DM using chat.scheduleMessage
-// - We TRY an ephemeral confirm in the right place:
-//     - if message was in a thread, reply ephemeral IN that thread
-//     - if message was top-level, send ephemeral WITHOUT thread_ts
-// - If ephemeral still fails, we send a one-time DM confirm
+// New time choices added:
+// - 1 minute (testing / ASAP)
+// - 30 minutes
+// - 1 hour
+// - 3 hours
+// - 1 business day
+// - 2 business days
+// - End of week (Fri 4pm)
 // =======================================================
 
 // --- Time helpers (America/Los_Angeles) ---
@@ -730,6 +723,19 @@ function upcomingFridayAt4pmPST(fromUTC: Date): Date {
   const daysToFri = (5 - dow + 7) % 7;
   d.setDate(d.getDate() + daysToFri);
   d.setHours(16, 0, 0, 0); // 4 PM
+  return d;
+}
+
+function addMinutesPST(fromUTC: Date, mins: number): Date {
+  // take "now" in PST representation, just add mins
+  const d = toPST(fromUTC);
+  d.setMinutes(d.getMinutes() + mins);
+  return d;
+}
+
+function addHoursPST(fromUTC: Date, hrs: number): Date {
+  const d = toPST(fromUTC);
+  d.setHours(d.getHours() + hrs);
   return d;
 }
 
@@ -783,6 +789,22 @@ bolt.shortcut("follow_up_reminder", async ({ ack, shortcut, client }) => {
             action_id: "when_choice",
             options: [
               {
+                text: { type: "plain_text", text: "1 minute (test)" },
+                value: "1min"
+              },
+              {
+                text: { type: "plain_text", text: "30 minutes" },
+                value: "30m"
+              },
+              {
+                text: { type: "plain_text", text: "1 hour" },
+                value: "1h"
+              },
+              {
+                text: { type: "plain_text", text: "3 hours" },
+                value: "3h"
+              },
+              {
                 text: { type: "plain_text", text: "1 business day" },
                 value: "1bd"
               },
@@ -796,8 +818,8 @@ bolt.shortcut("follow_up_reminder", async ({ ack, shortcut, client }) => {
               }
             ],
             initial_option: {
-              text: { type: "plain_text", text: "1 business day" },
-              value: "1bd"
+              text: { type: "plain_text", text: "1 minute (test)" },
+              value: "1min"
             }
           }
         }
@@ -821,12 +843,20 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
 
     const choice =
       view.state.values?.when_block?.when_choice?.selected_option?.value ||
-      "1bd";
+      "1min";
 
     // compute future reminder timestamp
     const nowUTC = new Date();
     let targetLocal: Date;
-    if (choice === "2bd") {
+    if (choice === "1min") {
+      targetLocal = addMinutesPST(nowUTC, 1);
+    } else if (choice === "30m") {
+      targetLocal = addMinutesPST(nowUTC, 30);
+    } else if (choice === "1h") {
+      targetLocal = addHoursPST(nowUTC, 1);
+    } else if (choice === "3h") {
+      targetLocal = addHoursPST(nowUTC, 3);
+    } else if (choice === "2bd") {
       targetLocal = addBusinessDaysPST(nowUTC, 2);
       targetLocal.setHours(
         nowUTC.getHours(),
@@ -837,6 +867,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     } else if (choice === "eow") {
       targetLocal = upcomingFridayAt4pmPST(nowUTC);
     } else {
+      // default "1bd"
       targetLocal = addBusinessDaysPST(nowUTC, 1);
       targetLocal.setHours(
         nowUTC.getHours(),
@@ -845,7 +876,10 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
         0
       );
     }
+
     let post_at = pstDateToUnix(targetLocal);
+
+    // Slack rule: post_at must be at least ~1 minute in future.
     const minFuture = Math.floor(Date.now() / 1000) + 60;
     if (post_at < minFuture) {
       post_at = minFuture;
@@ -901,12 +935,17 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     });
 
     // human-readable timing for confirmation
+    const humanReadableMap: Record<string, string> = {
+      "1min": "in ~1 minute",
+      "30m": "in 30 minutes",
+      "1h": "in 1 hour",
+      "3h": "in 3 hours",
+      "1bd": "in 1 business day",
+      "2bd": "in 2 business days",
+      "eow": "at end of week (Fri 4pm)"
+    };
     const humanReadable =
-      choice === "2bd"
-        ? "in 2 business days"
-        : choice === "eow"
-        ? "at end of week (Fri 4pm)"
-        : "in 1 business day";
+      humanReadableMap[choice] || "soon";
 
     // TRY ephemeral confirmation:
     // - If the original message was in a thread, send ephemeral with thread_ts.
@@ -919,7 +958,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
         text: `⏰ I’ll DM you ${humanReadable}.`
       };
       if (thread_ts_val) {
-        // original message was in a thread → confirm in that thread
+        // original was in a thread → try to display under that thread
         ephemeralArgs.thread_ts = message_ts;
       }
       await client.chat.postEphemeral(ephemeralArgs);
@@ -932,8 +971,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       ephemeralWorked = false;
     }
 
-    // FALLBACK: if ephemeral didn't actually work (Slack rejected),
-    // send a one-time DM confirm so they're not left wondering.
+    // FALLBACK: if ephemeral didn't actually work, send a one-time DM confirm
     if (!ephemeralWorked) {
       const confirmLines: string[] = [];
       confirmLines.push("✅ Reminder armed.");
@@ -952,12 +990,14 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       });
     }
 
-    // Log to Render for sanity
+    // Log to Render
     console.log(
       "follow_up_submit scheduled OK for",
       requester_user_id,
-      "at",
+      "post_at",
       post_at,
+      "choice",
+      choice,
       "ephemeralWorked=",
       ephemeralWorked,
       "thread_ts_val=",
