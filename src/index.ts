@@ -934,7 +934,9 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       text: reminderLines.join("\n")
     });
 
-    // human-readable timing for confirmation
+    // build a readable timestamp for debug:
+    // we'll include both the "humanReadable" label ("in 30 minutes")
+    // *and* the actual post_at number Slack will use
     const humanReadableMap: Record<string, string> = {
       "1min": "in ~1 minute",
       "30m": "in 30 minutes",
@@ -947,9 +949,33 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     const humanReadable =
       humanReadableMap[choice] || "soon";
 
-    // TRY ephemeral confirmation:
-    // - If the original message was in a thread, send ephemeral with thread_ts.
-    // - If not in a thread, send ephemeral WITHOUT thread_ts so Slack shows it.
+    // send immediate DM confirmation (for debug + clarity to user)
+    const confirmNowLines: string[] = [];
+    confirmNowLines.push(`✅ Reminder armed ${humanReadable}.`);
+    confirmNowLines.push(
+      `I'll DM you again at the scheduled time to follow up${
+        mentioned ? ` on <@${mentioned}>` : ""
+      }.`
+    );
+    confirmNowLines.push("");
+    confirmNowLines.push("Scheduled details:");
+    confirmNowLines.push(`• post_at (unix): ${post_at}`);
+    if (origin_text) {
+      confirmNowLines.push("");
+      confirmNowLines.push(`Original message: ${origin_text}`);
+    }
+    if (permalink) {
+      confirmNowLines.push(`Link: <${permalink}|open in channel>`);
+    }
+
+    await client.chat.postMessage({
+      channel: dm_channel,
+      text: confirmNowLines.join("\n")
+    });
+
+    // TRY ephemeral confirmation in-channel:
+    // - If the original message was in a thread, try to put the ephemeral there
+    // - If not, post ephemeral at channel bottom for that user only
     let ephemeralWorked = false;
     try {
       const ephemeralArgs: any = {
@@ -957,6 +983,32 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
         user: requester_user_id,
         text: `⏰ I’ll DM you ${humanReadable}.`
       };
+      if (thread_ts_val) {
+        ephemeralArgs.thread_ts = message_ts;
+      }
+      await client.chat.postEphemeral(ephemeralArgs);
+      ephemeralWorked = true;
+    } catch (err: any) {
+      console.error(
+        "ephemeral confirm failed:",
+        err?.data || err?.message || err
+      );
+      ephemeralWorked = false;
+    }
+
+    // Log to Render
+    console.log(
+      "follow_up_submit scheduled OK for",
+      requester_user_id,
+      "post_at",
+      post_at,
+      "choice",
+      choice,
+      "ephemeralWorked=",
+      ephemeralWorked,
+      "thread_ts_val=",
+      thread_ts_val ? "thread" : "channel_top_level"
+    );
       if (thread_ts_val) {
         // original was in a thread → try to display under that thread
         ephemeralArgs.thread_ts = message_ts;
