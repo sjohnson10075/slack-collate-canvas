@@ -23,7 +23,8 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
  * channels:history,
  * groups:history,
  * canvases:write,
- * canvases:read
+ * canvases:read,
+ * im:write
  */
 
 const receiver = new ExpressReceiver({
@@ -666,16 +667,6 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 
 // =======================================================
 // SHORTCUT C: FOLLOW-UP REMINDER
-//
-// Behavior:
-// - User chooses when they want a nudge.
-// - We schedule a message BACK IN THE CHANNEL / THREAD at that time.
-// - We post an ephemeral confirmation right now.
-//
-// NOW WITH YOUR REQUEST:
-// - Slim, clean reminder
-// - Still includes the last reassurance line
-// - No giant Slack preview card
 // =======================================================
 
 // --- Time helpers (America/Los_Angeles) ---
@@ -690,7 +681,10 @@ function toPST(dateUTC: Date): Date {
     second: "2-digit",
     hour12: false
   });
-  const partsArr = fmt.formatToParts(dateUTC) as Array<{ type: string; value: string }>;
+  const partsArr = fmt.formatToParts(dateUTC) as Array<{
+    type: string;
+    value: string;
+  }>;
   const parts: Record<string, string> = {};
   for (const p of partsArr) {
     parts[p.type] = p.value;
@@ -727,7 +721,7 @@ function upcomingFridayAt4pmPST(fromUTC: Date): Date {
   return d;
 }
 
-// extract first mentioned user ID like <@U123ABC>
+// get first mentioned @user in the message text
 function firstMentionUserId(text: string): string | null {
   const m = (text || "").match(/<@([UW][A-Z0-9]+)>/i);
   return m ? m[1] : null;
@@ -829,7 +823,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       view.state.values?.when_block?.when_choice?.selected_option?.value ||
       "1min";
 
-    // 1. Compute the UNIX timestamp (post_at)
+    // 1. compute when to send
     let post_at: number;
     const nowSec = Math.floor(Date.now() / 1000);
 
@@ -843,7 +837,6 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       post_at = nowSec + 3 * 60 * 60;
     } else if (choice === "2bd" || choice === "eow" || choice === "1bd") {
       const nowUTC = new Date();
-
       let targetLocal: Date;
       if (choice === "2bd") {
         targetLocal = addBusinessDaysPST(nowUTC, 2);
@@ -856,7 +849,6 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       } else if (choice === "eow") {
         targetLocal = upcomingFridayAt4pmPST(nowUTC);
       } else {
-        // default "1bd"
         targetLocal = addBusinessDaysPST(nowUTC, 1);
         targetLocal.setHours(
           nowUTC.getHours(),
@@ -865,7 +857,6 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
           0
         );
       }
-
       post_at = Math.floor(targetLocal.getTime() / 1000);
       if (post_at < nowSec + 60) {
         post_at = nowSec + 60;
@@ -892,8 +883,13 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     const mentioned = firstMentionUserId(origin_text);
 
     // 4. Build the text that will be scheduled later
-    // Now: ping line, quoted message, jump link, reassurance line.
-    // And we disable unfurl so Slack won't create that giant duplicate preview.
+    // We wrap the permalink like <https://link|original message>
+    // so Slack doesn't decide to "helpfully" unfurl a full preview card.
+    let jumpLine = "";
+    if (permalink) {
+      jumpLine = `Jump back: <${permalink}|original message>`;
+    }
+
     const futureLines: string[] = [];
     futureLines.push(
       `⏰ <@${requester_user_id}>, follow-up check${
@@ -905,8 +901,8 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     } else {
       futureLines.push("> (original message)");
     }
-    if (permalink) {
-      futureLines.push(`Jump back: ${permalink}`);
+    if (jumpLine) {
+      futureLines.push(jumpLine);
     }
     futureLines.push(
       "_If they've already handled it, you can ignore this._"
