@@ -666,14 +666,21 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 
 // =======================================================
 // SHORTCUT C: FOLLOW-UP REMINDER
-// New time choices added:
-// - 1 minute (testing / ASAP)
+//
+// New time choices:
+// - 1 minute (test)
 // - 30 minutes
 // - 1 hour
 // - 3 hours
 // - 1 business day
 // - 2 business days
 // - End of week (Fri 4pm)
+//
+// Behavior now:
+// 1. We schedule the future DM with chat.scheduleMessage (unchanged).
+// 2. We ALSO send an immediate DM saying "Reminder armed ... scheduled for ..."
+//    so we can confirm DM permissions and see post_at timestamp.
+// 3. We still show the ephemeral "⏰ I’ll DM you..." in-channel.
 // =======================================================
 
 // --- Time helpers (America/Los_Angeles) ---
@@ -727,7 +734,6 @@ function upcomingFridayAt4pmPST(fromUTC: Date): Date {
 }
 
 function addMinutesPST(fromUTC: Date, mins: number): Date {
-  // take "now" in PST representation, just add mins
   const d = toPST(fromUTC);
   d.setMinutes(d.getMinutes() + mins);
   return d;
@@ -828,7 +834,7 @@ bolt.shortcut("follow_up_reminder", async ({ ack, shortcut, client }) => {
   });
 });
 
-// Modal submit: schedule reminder + try ephemeral confirm in correct spot
+// Modal submit: schedule reminder + DM now + ephemeral confirm
 bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
   await ack();
 
@@ -927,16 +933,14 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       "_If they've already responded, you can ignore this._"
     );
 
-    // schedule the future DM
+    // schedule the future DM at post_at
     await client.chat.scheduleMessage({
       channel: dm_channel,
       post_at,
       text: reminderLines.join("\n")
     });
 
-    // build a readable timestamp for debug:
-    // we'll include both the "humanReadable" label ("in 30 minutes")
-    // *and* the actual post_at number Slack will use
+    // text label for timing
     const humanReadableMap: Record<string, string> = {
       "1min": "in ~1 minute",
       "30m": "in 30 minutes",
@@ -949,7 +953,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     const humanReadable =
       humanReadableMap[choice] || "soon";
 
-    // send immediate DM confirmation (for debug + clarity to user)
+    // send immediate DM confirmation to the user right now
     const confirmNowLines: string[] = [];
     confirmNowLines.push(`✅ Reminder armed ${humanReadable}.`);
     confirmNowLines.push(
@@ -973,9 +977,9 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       text: confirmNowLines.join("\n")
     });
 
-    // TRY ephemeral confirmation in-channel:
-    // - If the original message was in a thread, try to put the ephemeral there
-    // - If not, post ephemeral at channel bottom for that user only
+    // TRY ephemeral confirmation in the channel:
+    // - If original message was in a thread, try to attach to that thread.
+    // - If not, show ephemeral at the channel bottom for that user only.
     let ephemeralWorked = false;
     try {
       const ephemeralArgs: any = {
@@ -996,53 +1000,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       ephemeralWorked = false;
     }
 
-    // Log to Render
-    console.log(
-      "follow_up_submit scheduled OK for",
-      requester_user_id,
-      "post_at",
-      post_at,
-      "choice",
-      choice,
-      "ephemeralWorked=",
-      ephemeralWorked,
-      "thread_ts_val=",
-      thread_ts_val ? "thread" : "channel_top_level"
-    );
-      if (thread_ts_val) {
-        // original was in a thread → try to display under that thread
-        ephemeralArgs.thread_ts = message_ts;
-      }
-      await client.chat.postEphemeral(ephemeralArgs);
-      ephemeralWorked = true;
-    } catch (err: any) {
-      console.error(
-        "ephemeral confirm failed:",
-        err?.data || err?.message || err
-      );
-      ephemeralWorked = false;
-    }
-
-    // FALLBACK: if ephemeral didn't actually work, send a one-time DM confirm
-    if (!ephemeralWorked) {
-      const confirmLines: string[] = [];
-      confirmLines.push("✅ Reminder armed.");
-      confirmLines.push(`I'll DM you ${humanReadable} to follow up.`);
-      if (origin_text) {
-        confirmLines.push("");
-        confirmLines.push(`Original message: ${origin_text}`);
-      }
-      if (permalink) {
-        confirmLines.push(`Link: <${permalink}|open in channel>`);
-      }
-
-      await client.chat.postMessage({
-        channel: dm_channel,
-        text: confirmLines.join("\n")
-      });
-    }
-
-    // Log to Render
+    // Log to Render so we can debug timing
     console.log(
       "follow_up_submit scheduled OK for",
       requester_user_id,
