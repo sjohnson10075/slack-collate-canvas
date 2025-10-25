@@ -183,7 +183,7 @@ function findRootText(messages: any[], root_ts: string): string {
 
 // =======================================================
 // SHORTCUT A: Collate thread to Canvas
-// - Groups by message
+// - Groups by parent message
 // - Adds numbering
 // - Adds Spanish below English with blank line
 // - Uses thread root text as Canvas title
@@ -342,7 +342,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
 // SHORTCUT B: Export thread as PDF
 // - Title once on page 1 (extra spacing below it)
 // - Numbered groups
-// - English caption then Spanish
+// - English caption then Spanish caption
 // - 2 images per row, compressed
 // =======================================================
 bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
@@ -467,7 +467,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   let page = addPageNoHeader();
   let y = pageH - margin;
 
-  // Draw doc title at top of first page
+  // Title once, top of first page
   page.drawText(niceTitle, {
     x: margin,
     y: y - titleSize,
@@ -475,7 +475,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     font: fontBold,
     color: rgb(0, 0, 0)
   });
-  // slightly bigger gap under title
+  // extra spacing under title
   y -= titleSize + 20;
 
   function ensureSpace(required: number) {
@@ -491,9 +491,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     size: number,
     maxLines: number
   ): string[] {
-    const words = (text || "")
-      .replace(/\r/g, "")
-      .split(/\s+/);
+    const words = (text || "").replace(/\r/g, "").split(/\s+/);
     const lines: string[] = [];
     let cur = "";
     for (const w of words) {
@@ -557,7 +555,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     }
   }
 
-  // number + captions + Spanish + 2-up images
+  // number + captions + Spanish + images
   for (let idx = 0; idx < groups.length; idx++) {
     const g = groups[idx];
     const num = idx + 1;
@@ -621,7 +619,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
       y = yy - 6;
     }
 
-    // draw images two per row
+    // draw images 2-up
     for (let i = 0; i < g.fileIds.length; i += 2) {
       ensureSpace(tileHMax + 14);
 
@@ -676,12 +674,13 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 
 // =======================================================
 // SHORTCUT C: FOLLOW-UP REMINDER
-// - User picks "Follow-up reminder" on a message
+// - User triggers "Follow-up reminder" on a message
 // - Chooses timing
 // - We schedule a future DM using chat.scheduleMessage
-// - We TRY to send instant ephemeral confirmation in-thread
-//   so we don't clutter DM
-// - If ephemeral fails, THEN we send a one-time DM confirm
+// - We TRY an ephemeral confirm in the right place:
+//     - if message was in a thread, reply ephemeral IN that thread
+//     - if message was top-level, send ephemeral WITHOUT thread_ts
+// - If ephemeral still fails, we send a one-time DM confirm
 // =======================================================
 
 // --- Time helpers (America/Los_Angeles) ---
@@ -748,9 +747,10 @@ function firstMentionUserId(text: string): string | null {
 bolt.shortcut("follow_up_reminder", async ({ ack, shortcut, client }) => {
   await ack();
 
-  const { channel, message_ts, message } = shortcut as any;
+  const { channel, message_ts, thread_ts, message } = shortcut as any;
   const channel_id = channel.id as string;
   const origin_text = (message?.text || "").toString();
+  const thread_ts_value = thread_ts || ""; // "" means top-level message
 
   await client.views.open({
     trigger_id: (shortcut as any).trigger_id,
@@ -760,6 +760,7 @@ bolt.shortcut("follow_up_reminder", async ({ ack, shortcut, client }) => {
       private_metadata: JSON.stringify({
         channel_id,
         message_ts,
+        thread_ts: thread_ts_value,
         origin_text
       }),
       title: { type: "plain_text", text: "Follow-up reminder" },
@@ -805,7 +806,7 @@ bolt.shortcut("follow_up_reminder", async ({ ack, shortcut, client }) => {
   });
 });
 
-// Modal submit: schedule reminder + attempt ephemeral confirm
+// Modal submit: schedule reminder + try ephemeral confirm in correct spot
 bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
   await ack();
 
@@ -814,6 +815,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     const channel_id = meta.channel_id as string;
     const message_ts = meta.message_ts as string;
     const origin_text = (meta.origin_text || "") as string;
+    const thread_ts_val = (meta.thread_ts || "") as string; // "" if original was not in a thread
 
     const requester_user_id = (body?.user?.id || "") as string;
 
@@ -906,23 +908,32 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
         ? "at end of week (Fri 4pm)"
         : "in 1 business day";
 
-    // FIRST TRY: ephemeral confirmation in the original thread.
-    // Only the requester sees this. No DM clutter.
+    // TRY ephemeral confirmation:
+    // - If the original message was in a thread, send ephemeral with thread_ts.
+    // - If not in a thread, send ephemeral WITHOUT thread_ts so Slack shows it.
     let ephemeralWorked = false;
     try {
-      await client.chat.postEphemeral({
+      const ephemeralArgs: any = {
         channel: channel_id,
         user: requester_user_id,
-        thread_ts: message_ts,
         text: `⏰ I’ll DM you ${humanReadable}.`
-      });
+      };
+      if (thread_ts_val) {
+        // original message was in a thread → confirm in that thread
+        ephemeralArgs.thread_ts = message_ts;
+      }
+      await client.chat.postEphemeral(ephemeralArgs);
       ephemeralWorked = true;
     } catch (err: any) {
-      console.error("ephemeral confirm failed:", err?.data || err?.message || err);
+      console.error(
+        "ephemeral confirm failed:",
+        err?.data || err?.message || err
+      );
       ephemeralWorked = false;
     }
 
-    // FALLBACK: if ephemeral failed, send a one-time DM confirm now.
+    // FALLBACK: if ephemeral didn't actually work (Slack rejected),
+    // send a one-time DM confirm so they're not left wondering.
     if (!ephemeralWorked) {
       const confirmLines: string[] = [];
       confirmLines.push("✅ Reminder armed.");
@@ -941,18 +952,19 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       });
     }
 
-    // Log so we can see success in Render logs
+    // Log to Render for sanity
     console.log(
       "follow_up_submit scheduled OK for",
       requester_user_id,
       "at",
       post_at,
       "ephemeralWorked=",
-      ephemeralWorked
+      ephemeralWorked,
+      "thread_ts_val=",
+      thread_ts_val ? "thread" : "channel_top_level"
     );
   } catch (e: any) {
     console.error("follow_up_submit error:", e?.data || e?.message || e);
-    // We no longer attempt in-channel "sorry" because that may also fail.
   }
 });
 
