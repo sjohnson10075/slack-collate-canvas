@@ -24,8 +24,6 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
  * groups:history,
  * canvases:write,
  * canvases:read
- *
- * (Note: We are NOT DMing anymore, so im:write is not required now.)
  */
 
 const receiver = new ExpressReceiver({
@@ -669,18 +667,15 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 // =======================================================
 // SHORTCUT C: FOLLOW-UP REMINDER
 //
-// NEW BEHAVIOR (updated again):
-// - User sets a reminder (1 min, 30m, 1h, 3h, 1bd, 2bd, end of week).
+// Behavior:
+// - User chooses when they want a nudge.
 // - We schedule a message BACK IN THE CHANNEL / THREAD at that time.
-// - We show an ephemeral "⏰ I’ll remind you ..." right now.
+// - We post an ephemeral confirmation right now.
 //
-// FIXED TIMING:
-// For short delays (1min / 30m / 1h / 3h):
-//   We now schedule using (now + N seconds) in pure UTC, no PST math.
-//   That fixes the "1 minute = 1 hour later" bug.
-// For long delays (1bd / 2bd / eow):
-//   We still do business-day / Friday logic in local PST-style math,
-//   then convert that Date to UNIX seconds.
+// NOW WITH YOUR REQUEST:
+// - Slim, clean reminder
+// - Still includes the last reassurance line
+// - No giant Slack preview card
 // =======================================================
 
 // --- Time helpers (America/Los_Angeles) ---
@@ -707,7 +702,6 @@ function toPST(dateUTC: Date): Date {
   const mm = parts.minute || "00";
   const ss = parts.second || "00";
 
-  // We'll treat this as PST-ish (-08:00). Good enough for business-day math.
   return new Date(`${y}-${m}-${d}T${hh}:${mm}:${ss}.000-08:00`);
 }
 
@@ -818,7 +812,7 @@ bolt.shortcut("follow_up_reminder", async ({ ack, shortcut, client }) => {
   });
 });
 
-// Modal submit: schedule reminder in the channel/thread + ephemeral confirm
+// Modal submit: schedule reminder back in channel/thread + ephemeral confirm
 bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
   await ack();
 
@@ -835,12 +829,11 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       view.state.values?.when_block?.when_choice?.selected_option?.value ||
       "1min";
 
-    // 1. Compute the UNIX timestamp (post_at) for when Slack should post
+    // 1. Compute the UNIX timestamp (post_at)
     let post_at: number;
     const nowSec = Math.floor(Date.now() / 1000);
 
     if (choice === "1min") {
-      // now + 60s
       post_at = nowSec + 60;
     } else if (choice === "30m") {
       post_at = nowSec + 30 * 60;
@@ -849,14 +842,11 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     } else if (choice === "3h") {
       post_at = nowSec + 3 * 60 * 60;
     } else if (choice === "2bd" || choice === "eow" || choice === "1bd") {
-      // business-day / end-of-week logic uses PST-ish calendar math
-
       const nowUTC = new Date();
 
       let targetLocal: Date;
       if (choice === "2bd") {
         targetLocal = addBusinessDaysPST(nowUTC, 2);
-        // try to nudge to "same clock time" as now
         targetLocal.setHours(
           nowUTC.getHours(),
           nowUTC.getMinutes(),
@@ -877,13 +867,10 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       }
 
       post_at = Math.floor(targetLocal.getTime() / 1000);
-
-      // Enforce Slack rule: must be >= now + 60s
       if (post_at < nowSec + 60) {
         post_at = nowSec + 60;
       }
     } else {
-      // fallback safety (shouldn't happen)
       post_at = nowSec + 60;
     }
 
@@ -904,7 +891,9 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     // 3. Who did they @mention?
     const mentioned = firstMentionUserId(origin_text);
 
-    // 4. Build the text we will schedule in the channel/thread later
+    // 4. Build the text that will be scheduled later
+    // Now: ping line, quoted message, jump link, reassurance line.
+    // And we disable unfurl so Slack won't create that giant duplicate preview.
     const futureLines: string[] = [];
     futureLines.push(
       `⏰ <@${requester_user_id}>, follow-up check${
@@ -917,19 +906,19 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       futureLines.push("> (original message)");
     }
     if (permalink) {
-      futureLines.push(`↪️ <${permalink}|Jump to original message>`);
+      futureLines.push(`Jump back: ${permalink}`);
     }
-    futureLines.push("");
     futureLines.push(
       "_If they've already handled it, you can ignore this._"
     );
 
-    // 5. Schedule the reminder in the SAME CHANNEL.
-    // If this was in a thread, keep it in that thread; else top-level.
+    // 5. Schedule message in SAME CHANNEL.
     const scheduleArgs: any = {
       channel: channel_id,
       post_at,
-      text: futureLines.join("\n")
+      text: futureLines.join("\n"),
+      unfurl_links: false,
+      unfurl_media: false
     };
     if (thread_ts_val) {
       scheduleArgs.thread_ts = message_ts;
@@ -937,7 +926,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
 
     await client.chat.scheduleMessage(scheduleArgs);
 
-    // 6. human-readable timing for the immediate ephemeral confirmation
+    // 6. Ephemeral confirmation right now
     const humanReadableMap: Record<string, string> = {
       "1min": "in ~1 minute",
       "30m": "in 30 minutes",
@@ -950,7 +939,6 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     const humanReadable =
       humanReadableMap[choice] || "soon";
 
-    // 7. Show ephemeral confirm NOW so only they see it
     let ephemeralWorked = false;
     try {
       const ephemeralArgs: any = {
@@ -971,7 +959,6 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       ephemeralWorked = false;
     }
 
-    // 8. Log to Render
     console.log(
       "follow_up_submit scheduled OK for",
       requester_user_id,
