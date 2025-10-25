@@ -25,7 +25,7 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
  * canvases:write,
  * canvases:read
  *
- * (Note: im:write is no longer required for reminders, since we’re not DMing anymore.)
+ * (Note: We are NOT DMing anymore, so im:write is not required now.)
  */
 
 const receiver = new ExpressReceiver({
@@ -669,22 +669,18 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 // =======================================================
 // SHORTCUT C: FOLLOW-UP REMINDER
 //
-// NEW BEHAVIOR:
+// NEW BEHAVIOR (updated again):
 // - User sets a reminder (1 min, 30m, 1h, 3h, 1bd, 2bd, end of week).
-// - We DO NOT DM anymore.
-// - Instead, we schedule a message back into the same channel/thread
-//   in the future, @mentioning the requester. That way they see it,
-//   and the team can see the accountability.
+// - We schedule a message BACK IN THE CHANNEL / THREAD at that time.
+// - We show an ephemeral "⏰ I’ll remind you ..." right now.
 //
-// FLOW NOW:
-// 1. User clicks shortcut on a message where they @mentioned someone.
-// 2. We show modal with time choices.
-// 3. On submit:
-//    - We compute when to remind.
-//    - We schedule chat.scheduleMessage() to post in-thread later.
-//    - We send an ephemeral "⏰ I'll remind you ..." right now.
-//
-// This avoids Slack DM restrictions and still gives them a nudge.
+// FIXED TIMING:
+// For short delays (1min / 30m / 1h / 3h):
+//   We now schedule using (now + N seconds) in pure UTC, no PST math.
+//   That fixes the "1 minute = 1 hour later" bug.
+// For long delays (1bd / 2bd / eow):
+//   We still do business-day / Friday logic in local PST-style math,
+//   then convert that Date to UNIX seconds.
 // =======================================================
 
 // --- Time helpers (America/Los_Angeles) ---
@@ -711,7 +707,7 @@ function toPST(dateUTC: Date): Date {
   const mm = parts.minute || "00";
   const ss = parts.second || "00";
 
-  // We'll treat this as PST-ish (-08:00). Good enough for offset math.
+  // We'll treat this as PST-ish (-08:00). Good enough for business-day math.
   return new Date(`${y}-${m}-${d}T${hh}:${mm}:${ss}.000-08:00`);
 }
 
@@ -735,22 +731,6 @@ function upcomingFridayAt4pmPST(fromUTC: Date): Date {
   d.setDate(d.getDate() + daysToFri);
   d.setHours(16, 0, 0, 0); // 4 PM
   return d;
-}
-
-function addMinutesPST(fromUTC: Date, mins: number): Date {
-  const d = toPST(fromUTC);
-  d.setMinutes(d.getMinutes() + mins);
-  return d;
-}
-
-function addHoursPST(fromUTC: Date, hrs: number): Date {
-  const d = toPST(fromUTC);
-  d.setHours(d.getHours() + hrs);
-  return d;
-}
-
-function pstDateToUnix(dPST: Date): number {
-  return Math.floor(dPST.getTime() / 1000);
 }
 
 // extract first mentioned user ID like <@U123ABC>
@@ -855,47 +835,59 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       view.state.values?.when_block?.when_choice?.selected_option?.value ||
       "1min";
 
-    // compute future reminder timestamp (in UNIX seconds)
-    const nowUTC = new Date();
-    let targetLocal: Date;
+    // 1. Compute the UNIX timestamp (post_at) for when Slack should post
+    let post_at: number;
+    const nowSec = Math.floor(Date.now() / 1000);
+
     if (choice === "1min") {
-      targetLocal = addMinutesPST(nowUTC, 1);
+      // now + 60s
+      post_at = nowSec + 60;
     } else if (choice === "30m") {
-      targetLocal = addMinutesPST(nowUTC, 30);
+      post_at = nowSec + 30 * 60;
     } else if (choice === "1h") {
-      targetLocal = addHoursPST(nowUTC, 1);
+      post_at = nowSec + 60 * 60;
     } else if (choice === "3h") {
-      targetLocal = addHoursPST(nowUTC, 3);
-    } else if (choice === "2bd") {
-      targetLocal = addBusinessDaysPST(nowUTC, 2);
-      targetLocal.setHours(
-        nowUTC.getHours(),
-        nowUTC.getMinutes(),
-        0,
-        0
-      );
-    } else if (choice === "eow") {
-      targetLocal = upcomingFridayAt4pmPST(nowUTC);
+      post_at = nowSec + 3 * 60 * 60;
+    } else if (choice === "2bd" || choice === "eow" || choice === "1bd") {
+      // business-day / end-of-week logic uses PST-ish calendar math
+
+      const nowUTC = new Date();
+
+      let targetLocal: Date;
+      if (choice === "2bd") {
+        targetLocal = addBusinessDaysPST(nowUTC, 2);
+        // try to nudge to "same clock time" as now
+        targetLocal.setHours(
+          nowUTC.getHours(),
+          nowUTC.getMinutes(),
+          0,
+          0
+        );
+      } else if (choice === "eow") {
+        targetLocal = upcomingFridayAt4pmPST(nowUTC);
+      } else {
+        // default "1bd"
+        targetLocal = addBusinessDaysPST(nowUTC, 1);
+        targetLocal.setHours(
+          nowUTC.getHours(),
+          nowUTC.getMinutes(),
+          0,
+          0
+        );
+      }
+
+      post_at = Math.floor(targetLocal.getTime() / 1000);
+
+      // Enforce Slack rule: must be >= now + 60s
+      if (post_at < nowSec + 60) {
+        post_at = nowSec + 60;
+      }
     } else {
-      // default "1bd"
-      targetLocal = addBusinessDaysPST(nowUTC, 1);
-      targetLocal.setHours(
-        nowUTC.getHours(),
-        nowUTC.getMinutes(),
-        0,
-        0
-      );
+      // fallback safety (shouldn't happen)
+      post_at = nowSec + 60;
     }
 
-    let post_at = pstDateToUnix(targetLocal);
-
-    // Slack rule: post_at must be >= now + 60s
-    const minFuture = Math.floor(Date.now() / 1000) + 60;
-    if (post_at < minFuture) {
-      post_at = minFuture;
-    }
-
-    // permalink to original
+    // 2. permalink to original
     let permalink: string | null = null;
     try {
       const pl = await client.chat.getPermalink({
@@ -909,16 +901,10 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       /* ignore */
     }
 
-    // Who did they @mention?
+    // 3. Who did they @mention?
     const mentioned = firstMentionUserId(origin_text);
 
-    // Build the text we will schedule in the channel/thread later
-    //
-    // Example:
-    // "⏰ Hey @requester_user_id — have you heard back from @target yet?
-    //  > original message text
-    //  Jump back: <permalink>"
-    //
+    // 4. Build the text we will schedule in the channel/thread later
     const futureLines: string[] = [];
     futureLines.push(
       `⏰ <@${requester_user_id}>, follow-up check${
@@ -938,9 +924,8 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       "_If they've already handled it, you can ignore this._"
     );
 
-    // Schedule the reminder in the SAME CHANNEL.
-    // If the original message was in a thread, try to keep it in that thread.
-    // Otherwise, it'll post in channel main.
+    // 5. Schedule the reminder in the SAME CHANNEL.
+    // If this was in a thread, keep it in that thread; else top-level.
     const scheduleArgs: any = {
       channel: channel_id,
       post_at,
@@ -949,9 +934,10 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     if (thread_ts_val) {
       scheduleArgs.thread_ts = message_ts;
     }
+
     await client.chat.scheduleMessage(scheduleArgs);
 
-    // human-readable timing for the immediate ephemeral confirmation
+    // 6. human-readable timing for the immediate ephemeral confirmation
     const humanReadableMap: Record<string, string> = {
       "1min": "in ~1 minute",
       "30m": "in 30 minutes",
@@ -964,7 +950,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     const humanReadable =
       humanReadableMap[choice] || "soon";
 
-    // Show ephemeral confirm NOW so only they see it
+    // 7. Show ephemeral confirm NOW so only they see it
     let ephemeralWorked = false;
     try {
       const ephemeralArgs: any = {
@@ -985,7 +971,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       ephemeralWorked = false;
     }
 
-    // Log to Render
+    // 8. Log to Render
     console.log(
       "follow_up_submit scheduled OK for",
       requester_user_id,
@@ -1013,4 +999,3 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     DEEPL_API_KEY ? "present" : "absent"
   );
 })();
-
