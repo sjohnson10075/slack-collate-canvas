@@ -495,3 +495,266 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   await bolt.start(process.env.PORT || 3000);
   console.log("⚡ Collate-to-Canvas running | Spanish", ADD_SPANISH ? "ON" : "OFF", "| Key", DEEPL_API_KEY ? "present" : "absent");
 })();
+// =======================================================
+// FOLLOW-UP REMINDER (message shortcut -> modal -> schedule DM)
+// Requires new scope: im:write (already added) + existing chat:write
+// =======================================================
+
+// --- Time helpers (America/Los_Angeles) ---
+function toPST(dateUTC: Date): Date {
+  // Convert current UTC date to PST-like local time for scheduling math.
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false
+  });
+  const partsArr = fmt.formatToParts(dateUTC) as Array<{type:string; value:string}>;
+  const parts: Record<string,string> = {};
+  for (const p of partsArr) {
+    parts[p.type] = p.value;
+  }
+  const y = parts.year || "1970";
+  const m = parts.month || "01";
+  const d = parts.day || "01";
+  const hh = parts.hour || "00";
+  const mm = parts.minute || "00";
+  const ss = parts.second || "00";
+
+  // Force -08:00. This is "good enough" for business-day math / reminders.
+  return new Date(`${y}-${m}-${d}T${hh}:${mm}:${ss}.000-08:00`);
+}
+
+function addBusinessDaysPST(startUTC: Date, days: number): Date {
+  // Walk forward days, skipping Sat/Sun.
+  let d = toPST(startUTC);
+  let added = 0;
+  while (added < days) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay(); // 0=Sun .. 6=Sat
+    if (dow !== 0 && dow !== 6) {
+      added++;
+    }
+  }
+  return d;
+}
+
+function upcomingFridayAt4pmPST(fromUTC: Date): Date {
+  let d = toPST(fromUTC);
+  const dow = d.getDay(); // 0=Sun .. 6=Sat
+  const daysToFri = (5 - dow + 7) % 7; // 0..6
+  d.setDate(d.getDate() + daysToFri);
+  d.setHours(16, 0, 0, 0); // 4:00 PM local PST/PDT
+  return d;
+}
+
+function pstDateToUnix(dPST: Date): number {
+  // Convert that local-ish Date into Unix seconds.
+  return Math.floor(dPST.getTime() / 1000);
+}
+
+// Pull first mentioned Slack user like <@U123ABC>
+function firstMentionUserId(text: string): string | null {
+  const m = (text || "").match(/<@([UW][A-Z0-9]+)>/i);
+  return m ? m[1] : null;
+}
+
+// ---------- Shortcut: follow_up_reminder (open modal) ----------
+bolt.shortcut("follow_up_reminder", async ({ ack, shortcut, client }) => {
+  await ack();
+
+  const { channel, message_ts, user, message } = shortcut as any;
+  const channel_id = channel.id as string;
+  const origin_text = (message?.text || "").toString();
+
+  // We open a modal so the sender can choose timing
+  await client.views.open({
+    trigger_id: (shortcut as any).trigger_id,
+    view: {
+      type: "modal",
+      callback_id: "follow_up_submit",
+      private_metadata: JSON.stringify({
+        channel_id,
+        message_ts,
+        origin_text
+      }),
+      title: { type: "plain_text", text: "Follow-up reminder" },
+      submit: { type: "plain_text", text: "Set reminder" },
+      close: { type: "plain_text", text: "Cancel" },
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: "When should I remind you *if you haven’t heard back?*"
+          }
+        },
+        {
+          type: "input",
+          block_id: "when_block",
+          label: { type: "plain_text", text: "Choose one" },
+          element: {
+            type: "radio_buttons",
+            action_id: "when_choice",
+            options: [
+              {
+                text: { type: "plain_text", text: "1 business day" },
+                value: "1bd"
+              },
+              {
+                text: { type: "plain_text", text: "2 business days" },
+                value: "2bd"
+              },
+              {
+                text: { type: "plain_text", text: "End of week (Fri 4:00 PM)" },
+                value: "eow"
+              }
+            ],
+            initial_option: {
+              text: { type: "plain_text", text: "1 business day" },
+              value: "1bd"
+            }
+          }
+        }
+      ]
+    }
+  });
+});
+
+// ---------- Modal submit: compute schedule time + schedule a DM ----------
+bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
+  await ack();
+
+  try {
+    // Info we tucked away in private_metadata
+    const meta = JSON.parse(view.private_metadata || "{}");
+    const channel_id = meta.channel_id as string;
+    const message_ts = meta.message_ts as string;
+    const origin_text = (meta.origin_text || "") as string;
+
+    // Who asked for this reminder? We'll DM them.
+    const requester_user_id = (body?.user?.id || "") as string;
+
+    // Which timing option did they pick?
+    const choice =
+      view.state.values?.when_block?.when_choice?.selected_option?.value ||
+      "1bd";
+
+    // Figure out the "post_at" timestamp Slack should send the DM
+    const nowUTC = new Date();
+    let targetLocal: Date;
+    if (choice === "2bd") {
+      // two business days from now, same time of day
+      targetLocal = addBusinessDaysPST(nowUTC, 2);
+      targetLocal.setHours(
+        nowUTC.getHours(),
+        nowUTC.getMinutes(),
+        0,
+        0
+      );
+    } else if (choice === "eow") {
+      // upcoming Friday 4pm
+      targetLocal = upcomingFridayAt4pmPST(nowUTC);
+    } else {
+      // default 1 business day from now, same time of day
+      targetLocal = addBusinessDaysPST(nowUTC, 1);
+      targetLocal.setHours(
+        nowUTC.getHours(),
+        nowUTC.getMinutes(),
+        0,
+        0
+      );
+    }
+    let post_at = pstDateToUnix(targetLocal);
+
+    // Safety: make sure it's not in the past (Slack rejects past times)
+    const minFuture = Math.floor(Date.now() / 1000) + 60;
+    if (post_at < minFuture) {
+      post_at = minFuture;
+    }
+
+    // Try to build a permalink to the original message
+    let permalink: string | null = null;
+    try {
+      const pl = await client.chat.getPermalink({
+        channel: channel_id,
+        message_ts
+      });
+      if ((pl as any).ok) {
+        permalink = (pl as any).permalink as string;
+      }
+    } catch {
+      // ignore
+    }
+
+    // Who was @mentioned in that message (for context in the reminder)?
+    const mentioned = firstMentionUserId(origin_text);
+
+    // Open (or get) a DM channel with the requester (requires im:write)
+    const imOpen = await client.conversations.open({
+      users: requester_user_id
+    });
+    const dm_channel = (imOpen as any)?.channel?.id as string;
+
+    // Build the text that will show up later in their DM
+    const reminderLines: string[] = [];
+    reminderLines.push(
+      `Follow-up check${
+        mentioned ? ` for <@${mentioned}>` : ""
+      }:`
+    );
+    if (origin_text) {
+      reminderLines.push(`> ${origin_text}`);
+    } else {
+      reminderLines.push("> (original message)");
+    }
+    if (permalink) {
+      reminderLines.push(
+        `↪️ <${permalink}|Jump to original message>`
+      );
+    }
+    reminderLines.push("");
+    reminderLines.push(
+      "_If they've already responded, you can ignore this._"
+    );
+
+    // Ask Slack to send that DM in the future.
+    await client.chat.scheduleMessage({
+      channel: dm_channel,
+      post_at,
+      text: reminderLines.join("\n")
+    });
+
+    // Let the requester know it’s armed (ephemeral in the thread)
+    // Ephemeral means only they see it.
+    await client.chat.postEphemeral({
+      channel: channel_id,
+      user: requester_user_id,
+      thread_ts: message_ts,
+      text:
+        choice === "2bd"
+          ? "⏰ I’ll DM you in 2 business days."
+          : choice === "eow"
+          ? "⏰ I’ll DM you at end of week (Fri 4pm)."
+          : "⏰ I’ll DM you in 1 business day."
+    });
+  } catch (e: any) {
+    console.error("follow_up_submit error:", e?.data || e?.message || e);
+    // best-effort "sorry" back to the user
+    try {
+      const meta = JSON.parse(view.private_metadata || "{}");
+      const channel_id = meta.channel_id as string;
+      const message_ts = meta.message_ts as string;
+      const requester_user_id = (body?.user?.id || "") as string;
+      await client.chat.postEphemeral({
+        channel: channel_id,
+        user: requester_user_id,
+        thread_ts: message_ts,
+        text:
+          "⚠️ Sorry — I couldn’t set that reminder. Try again in a moment."
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+});
