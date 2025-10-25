@@ -16,14 +16,16 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
  *
  * Scopes used:
  * chat:write,
+ * chat:write.public,
  * commands,
  * files:read,
  * files:write,
  * channels:history,
  * groups:history,
  * canvases:write,
- * canvases:read,
- * im:write     (for DM reminders)
+ * canvases:read
+ *
+ * (Note: im:write is no longer required for reminders, since we’re not DMing anymore.)
  */
 
 const receiver = new ExpressReceiver({
@@ -667,20 +669,22 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 // =======================================================
 // SHORTCUT C: FOLLOW-UP REMINDER
 //
-// New time choices:
-// - 1 minute (test)
-// - 30 minutes
-// - 1 hour
-// - 3 hours
-// - 1 business day
-// - 2 business days
-// - End of week (Fri 4pm)
+// NEW BEHAVIOR:
+// - User sets a reminder (1 min, 30m, 1h, 3h, 1bd, 2bd, end of week).
+// - We DO NOT DM anymore.
+// - Instead, we schedule a message back into the same channel/thread
+//   in the future, @mentioning the requester. That way they see it,
+//   and the team can see the accountability.
 //
-// Behavior now:
-// 1. We schedule the future DM with chat.scheduleMessage (unchanged).
-// 2. We ALSO send an immediate DM saying "Reminder armed ... scheduled for ..."
-//    so we can confirm DM permissions and see post_at timestamp.
-// 3. We still show the ephemeral "⏰ I’ll DM you..." in-channel.
+// FLOW NOW:
+// 1. User clicks shortcut on a message where they @mentioned someone.
+// 2. We show modal with time choices.
+// 3. On submit:
+//    - We compute when to remind.
+//    - We schedule chat.scheduleMessage() to post in-thread later.
+//    - We send an ephemeral "⏰ I'll remind you ..." right now.
+//
+// This avoids Slack DM restrictions and still gives them a nudge.
 // =======================================================
 
 // --- Time helpers (America/Los_Angeles) ---
@@ -762,7 +766,7 @@ bolt.shortcut("follow_up_reminder", async ({ ack, shortcut, client }) => {
   const { channel, message_ts, thread_ts, message } = shortcut as any;
   const channel_id = channel.id as string;
   const origin_text = (message?.text || "").toString();
-  const thread_ts_value = thread_ts || ""; // "" means top-level message
+  const thread_ts_value = thread_ts || ""; // "" = top-level message
 
   await client.views.open({
     trigger_id: (shortcut as any).trigger_id,
@@ -834,7 +838,7 @@ bolt.shortcut("follow_up_reminder", async ({ ack, shortcut, client }) => {
   });
 });
 
-// Modal submit: schedule reminder + DM now + ephemeral confirm
+// Modal submit: schedule reminder in the channel/thread + ephemeral confirm
 bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
   await ack();
 
@@ -843,7 +847,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     const channel_id = meta.channel_id as string;
     const message_ts = meta.message_ts as string;
     const origin_text = (meta.origin_text || "") as string;
-    const thread_ts_val = (meta.thread_ts || "") as string; // "" if original was not in a thread
+    const thread_ts_val = (meta.thread_ts || "") as string; // "" if not in thread
 
     const requester_user_id = (body?.user?.id || "") as string;
 
@@ -851,7 +855,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       view.state.values?.when_block?.when_choice?.selected_option?.value ||
       "1min";
 
-    // compute future reminder timestamp
+    // compute future reminder timestamp (in UNIX seconds)
     const nowUTC = new Date();
     let targetLocal: Date;
     if (choice === "1min") {
@@ -885,7 +889,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
 
     let post_at = pstDateToUnix(targetLocal);
 
-    // Slack rule: post_at must be at least ~1 minute in future.
+    // Slack rule: post_at must be >= now + 60s
     const minFuture = Math.floor(Date.now() / 1000) + 60;
     if (post_at < minFuture) {
       post_at = minFuture;
@@ -905,42 +909,49 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       /* ignore */
     }
 
+    // Who did they @mention?
     const mentioned = firstMentionUserId(origin_text);
 
-    // open DM channel with requester (needs im:write)
-    const imOpen = await client.conversations.open({
-      users: requester_user_id
-    });
-    const dm_channel = (imOpen as any)?.channel?.id as string;
-
-    // build text for the FUTURE scheduled DM
-    const reminderLines: string[] = [];
-    reminderLines.push(
-      `Follow-up check${mentioned ? ` for <@${mentioned}>` : ""}:`
+    // Build the text we will schedule in the channel/thread later
+    //
+    // Example:
+    // "⏰ Hey @requester_user_id — have you heard back from @target yet?
+    //  > original message text
+    //  Jump back: <permalink>"
+    //
+    const futureLines: string[] = [];
+    futureLines.push(
+      `⏰ <@${requester_user_id}>, follow-up check${
+        mentioned ? ` on <@${mentioned}>` : ""
+      }.`
     );
     if (origin_text) {
-      reminderLines.push(`> ${origin_text}`);
+      futureLines.push(`> ${origin_text}`);
     } else {
-      reminderLines.push("> (original message)");
+      futureLines.push("> (original message)");
     }
     if (permalink) {
-      reminderLines.push(
-        `↪️ <${permalink}|Jump to original message>`
-      );
+      futureLines.push(`↪️ <${permalink}|Jump to original message>`);
     }
-    reminderLines.push("");
-    reminderLines.push(
-      "_If they've already responded, you can ignore this._"
+    futureLines.push("");
+    futureLines.push(
+      "_If they've already handled it, you can ignore this._"
     );
 
-    // schedule the future DM at post_at
-    await client.chat.scheduleMessage({
-      channel: dm_channel,
+    // Schedule the reminder in the SAME CHANNEL.
+    // If the original message was in a thread, try to keep it in that thread.
+    // Otherwise, it'll post in channel main.
+    const scheduleArgs: any = {
+      channel: channel_id,
       post_at,
-      text: reminderLines.join("\n")
-    });
+      text: futureLines.join("\n")
+    };
+    if (thread_ts_val) {
+      scheduleArgs.thread_ts = message_ts;
+    }
+    await client.chat.scheduleMessage(scheduleArgs);
 
-    // text label for timing
+    // human-readable timing for the immediate ephemeral confirmation
     const humanReadableMap: Record<string, string> = {
       "1min": "in ~1 minute",
       "30m": "in 30 minutes",
@@ -953,39 +964,13 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     const humanReadable =
       humanReadableMap[choice] || "soon";
 
-    // send immediate DM confirmation to the user right now
-    const confirmNowLines: string[] = [];
-    confirmNowLines.push(`✅ Reminder armed ${humanReadable}.`);
-    confirmNowLines.push(
-      `I'll DM you again at the scheduled time to follow up${
-        mentioned ? ` on <@${mentioned}>` : ""
-      }.`
-    );
-    confirmNowLines.push("");
-    confirmNowLines.push("Scheduled details:");
-    confirmNowLines.push(`• post_at (unix): ${post_at}`);
-    if (origin_text) {
-      confirmNowLines.push("");
-      confirmNowLines.push(`Original message: ${origin_text}`);
-    }
-    if (permalink) {
-      confirmNowLines.push(`Link: <${permalink}|open in channel>`);
-    }
-
-    await client.chat.postMessage({
-      channel: dm_channel,
-      text: confirmNowLines.join("\n")
-    });
-
-    // TRY ephemeral confirmation in the channel:
-    // - If original message was in a thread, try to attach to that thread.
-    // - If not, show ephemeral at the channel bottom for that user only.
+    // Show ephemeral confirm NOW so only they see it
     let ephemeralWorked = false;
     try {
       const ephemeralArgs: any = {
         channel: channel_id,
         user: requester_user_id,
-        text: `⏰ I’ll DM you ${humanReadable}.`
+        text: `⏰ I’ll remind you ${humanReadable} in this thread.`
       };
       if (thread_ts_val) {
         ephemeralArgs.thread_ts = message_ts;
@@ -1000,7 +985,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       ephemeralWorked = false;
     }
 
-    // Log to Render so we can debug timing
+    // Log to Render
     console.log(
       "follow_up_submit scheduled OK for",
       requester_user_id,
@@ -1028,3 +1013,4 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
     DEEPL_API_KEY ? "present" : "absent"
   );
 })();
+
