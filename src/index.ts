@@ -619,7 +619,9 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
       const hLeft = await drawTile(margin, y, g.fileIds[i]);
       let hRight = 0;
       if (i + 1 < g.fileIds.length) {
-        hRight = await drawTile(margin + tileW + gutter, y, g.fileIds[i + 1]);
+        hRight = await drawTile(margin + (contentW - gutter) / 2 + gutter, y, g.fileIds[i + 1]);
+        // NOTE: we changed x positioning here in earlier iterations; keeping consistent.
+        // But to avoid drift, let's explicitly recompute tileW each loop:
       }
 
       const rowH = Math.max(hLeft, hRight);
@@ -667,7 +669,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 
 // =======================================================
 // SHORTCUT C: FOLLOW-UP REMINDER
-// (Option A version: NO permalink in the scheduled reminder)
+// (Clutter-reduced version: keep Jump back link, DROP the manual quoted line)
 // =======================================================
 
 // --- Time helpers (America/Los_Angeles) ---
@@ -808,7 +810,10 @@ bolt.shortcut("follow_up_reminder", async ({ ack, shortcut, client }) => {
 });
 
 // Modal submit: schedule reminder in channel/thread + ephemeral confirm
-// (NO permalink in the scheduled text to block Slack from adding its preview card)
+// THIS VERSION:
+// - Keeps Jump back link w/permalink
+// - DROPS our own manual copy of the message text
+//   (Slack will still insert its gray preview card so you still see the message.)
 bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
   await ack();
 
@@ -868,28 +873,45 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
       post_at = nowSec + 60;
     }
 
-    // 2. figure out who they @mentioned
+    // 2. permalink to original message
+    let permalink: string | null = null;
+    try {
+      const pl = await client.chat.getPermalink({
+        channel: channel_id,
+        message_ts
+      });
+      if ((pl as any).ok) {
+        permalink = (pl as any).permalink as string;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    // 3. who did they @mention?
     const mentioned = firstMentionUserId(origin_text);
 
-    // 3. Build the text that will be scheduled later.
-    //    NO permalink / Jump back line.
+    // 4. Build the text that will be scheduled later.
+    //    DO NOT include our own `> original_text`
+    //    DO include Jump back link (Slack will still unfurl a gray card with the message)
     const futureLines: string[] = [];
     futureLines.push(
       `⏰ <@${requester_user_id}>, follow-up check${
         mentioned ? ` on <@${mentioned}>` : ""
       }.`
     );
-    if (origin_text) {
-      futureLines.push(`> ${origin_text}`);
-    } else {
-      futureLines.push("> (original message)");
+
+    if (permalink) {
+      // Slack link format <url|label>
+      futureLines.push(
+        `Jump back: <${permalink}|original message>`
+      );
     }
+
     futureLines.push(
       "_If they've already handled it, you can ignore this._"
     );
 
-    // 4. Schedule message in SAME CHANNEL.
-    //    Remove permalink so Slack won't generate the duplicate gray card.
+    // 5. Schedule message in SAME CHANNEL.
     const scheduleArgs: any = {
       channel: channel_id,
       post_at,
@@ -903,7 +925,7 @@ bolt.view("follow_up_submit", async ({ ack, view, client, body }) => {
 
     await client.chat.scheduleMessage(scheduleArgs);
 
-    // 5. Ephemeral confirmation right now
+    // 6. Ephemeral confirmation right now
     const humanReadableMap: Record<string, string> = {
       "1min": "in ~1 minute",
       "30m": "in 30 minutes",
