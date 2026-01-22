@@ -160,7 +160,29 @@ function findRootText(messages: any[], root_ts: string): string {
   const t = (root?.text || "").toString();
   return t.trim();
 }
+// --- Slack file helpers (permalink + original download) ---
+async function fetchFilePermalink(client: any, fileId: string): Promise<string | null> {
+  try {
+    const info = await client.apiCall("files.info", { file: fileId }) as any;
+    return info?.file?.permalink || null;
+  } catch {
+    return null;
+  }
+}
 
+async function downloadOriginal(client: any, botToken: string, fileId: string): Promise<Buffer | null> {
+  try {
+    const info = await client.apiCall("files.info", { file: fileId }) as any;
+    const url: string | undefined = info?.file?.url_private_download || info?.file?.url_private;
+    if (!url) return null;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${botToken}` } } as any);
+    if (!res.ok) return null;
+    const ab = await res.arrayBuffer();
+    return Buffer.from(ab);
+  } catch {
+    return null;
+  }
+}
 // =======================================================
 // SHORTCUT A: Collate thread to Canvas
 // =======================================================
