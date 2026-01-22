@@ -131,44 +131,16 @@ async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
 // --- Optional Spanish translation (DeepL) ---
 const ADD_SPANISH = (process.env.ADD_SPANISH || "") === "1";
 const DEEPL_API_KEY = process.env.DEEPL_API_KEY || "";
-function deeplEndpointFromKey(k: string) {
-  return k && k.includes(":fx")
-    ? "https://api-free.deepl.com/v2/translate"
-    : "https://api.deepl.com/v2/translate";
-}
+
+// Use the modern helper above (translateToEs) so we honor ES-419 and log errors.
 async function translateEs(
   text: string
 ): Promise<{ ok: boolean; es: string }> {
-  if (!ADD_SPANISH) return { ok: false, es: "" };
-  if (!DEEPL_API_KEY) return { ok: false, es: "" };
+  if (!ADD_SPANISH || !DEEPL_API_KEY) return { ok: false, es: "" };
   const t = (text || "").trim();
   if (!t) return { ok: true, es: "" };
-  try {
-    const body = new URLSearchParams({
-      auth_key: DEEPL_API_KEY,
-      text: t,
-      target_lang: "ES",
-      preserve_formatting: "1"
-    });
-    const res = await fetch(deeplEndpointFromKey(DEEPL_API_KEY), {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body as any
-    } as any);
-    if (!res.ok) {
-      console.log("[deepl] HTTP", res.status, res.statusText);
-      return { ok: false, es: "" };
-    }
-    const data = await res.json();
-    const translated = data?.translations?.[0]?.text;
-    if (typeof translated === "string")
-      return { ok: true, es: translated };
-    console.log("[deepl] unexpected payload", data);
-    return { ok: false, es: "" };
-  } catch (e: any) {
-    console.log("[deepl] error", e?.message || e);
-    return { ok: false, es: "" };
-  }
+  const es = await translateToEs(t);
+  return es ? { ok: true, es } : { ok: false, es: "" };
 }
 
 // Root title helpers
