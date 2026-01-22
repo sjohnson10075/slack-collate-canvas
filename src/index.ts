@@ -78,33 +78,40 @@ app.post("/slack/commands", async (req, res) => {
   });
 });
 
-// ---------- Helpers ----------
-async function fetchFilePermalink(client: any, fileId: string): Promise<string | null> {
+// === DeepL helper (Latin American Spanish, Free/Pro aware, with logging) ===
+async function translateToEs(text: string): Promise<string> {
   try {
-    const info = (await client.apiCall("files.info", { file: fileId })) as any;
-    return (info?.file?.permalink as string) || null;
-  } catch {
-    return null;
-  }
-}
+    const key = process.env.DEEPL_API_KEY;
+    if (!key || !text?.trim()) return "";
 
-async function downloadOriginal(
-  client: any,
-  botToken: string,
-  fileId: string
-): Promise<Buffer | null> {
-  try {
-    const info = (await client.apiCall("files.info", { file: fileId })) as any;
-    const url = info.file?.url_private_download || info.file?.url_private;
-    if (!url) return null;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${botToken}` }
+    const target = (process.env.DEEPL_TARGET_LANG || "ES-419").trim();
+    const base = (process.env.DEEPL_BASE_URL?.trim() || "https://api-free.deepl.com/v2").replace(/\/+$/, "");
+
+    const params = new URLSearchParams();
+    params.append("text", text);
+    params.append("target_lang", target);
+    params.append("model_type", "quality_optimized");
+
+    const resp = await fetch(`${base}/translate`, {
+      method: "POST",
+      headers: {
+        Authorization: `DeepL-Auth-Key ${key}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params.toString(),
     } as any);
-    if (!res.ok) return null;
-    const ab = await res.arrayBuffer();
-    return Buffer.from(ab);
-  } catch {
-    return null;
+
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      console.error("deepl error:", resp.status, resp.statusText, body);
+      return "";
+    }
+    const data = await resp.json();
+    const out = data?.translations?.[0]?.text || "";
+    return typeof out === "string" ? out : "";
+  } catch (e: any) {
+    console.error("deepl exception:", e?.message || e);
+    return "";
   }
 }
 
