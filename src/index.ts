@@ -388,38 +388,43 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const groups: Group[] = [];
 
   for (const m of messages) {
-    const files = (m as any).files as Array<any> | undefined;
-    if (!files || !files.length) continue;
+  // Never include the root/header message as a numbered work item
+  if ((m as any).ts === root_ts) continue;
 
-    const caption =
-      (m as any).text?.trim() ||
-      (files[0]?.initial_comment?.comment?.trim?.() ?? "") ||
-      (files[0]?.title?.trim?.() ?? "");
+  const files = ((m as any).files as Array<any> | undefined) || [];
 
-    const fileIds: string[] = [];
-    for (const f of files) {
-      if (!/^image\//.test(f.mimetype || "")) continue;
-      fileIds.push(f.id);
-    }
-    if (fileIds.length) {
-      let captionEs: string | undefined = undefined;
-      if (ADD_SPANISH) {
-        const res = await translateEs(caption);
-        if (res.ok && res.es) captionEs = res.es;
-      }
-      groups.push({
-        caption,
-        captionEs,
-        fileIds
-      });
-    }
+  const caption =
+    (m as any).text?.trim() ||
+    (files[0]?.initial_comment?.comment?.trim?.() ?? "") ||
+    (files[0]?.title?.trim?.() ?? "");
+
+  const fileIds: string[] = [];
+  for (const f of files) {
+    if (!/^image\//.test(f.mimetype || "")) continue;
+    fileIds.push(f.id);
   }
+
+  // Skip only if the reply has neither usable text nor images
+  if (!caption && !fileIds.length) continue;
+
+  let captionEs: string | undefined = undefined;
+  if (ADD_SPANISH && caption) {
+    const res = await translateEs(caption);
+    if (res.ok && res.es) captionEs = res.es;
+  }
+
+  groups.push({
+    caption,
+    captionEs,
+    fileIds
+  });
+}
 
   if (!groups.length) {
     await client.chat.update({
       channel: channel_id,
       ts: progress_ts,
-      text: "No images found in this thread."
+      text: "No text or images found in this thread."
     });
     return;
   }
@@ -460,17 +465,54 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 
   let page = addPageNoHeader();
   let y = pageH - margin;
+  
+function wrapSimple(
+  text: string,
+  maxWidth: number,
+  size: number,
+  maxLines: number
+): string[] {
+  const words = (text || "").replace(/\r/g, "").split(/\s+/);
+  const lines: string[] = [];
+  let cur = "";
 
-  // Title once, top of first page
-  page.drawText(niceTitle, {
+  for (const w of words) {
+    const test = cur ? `${cur} ${w}` : w;
+    if (fontBold.widthOfTextAtSize(test, size) <= maxWidth) {
+      cur = test;
+    } else {
+      if (cur) {
+        lines.push(cur);
+        if (lines.length >= maxLines) break;
+      }
+      cur = w;
+    }
+  }
+
+  if (cur && lines.length < maxLines) {
+    lines.push(cur);
+  }
+
+  return lines.slice(0, maxLines);
+}
+  
+  // Title once, top of first page, wrapped to page width
+const titleLines = wrapSimple(niceTitle, contentW, titleSize, 4);
+
+let titleY = y - titleSize;
+for (const line of titleLines) {
+  page.drawText(line, {
     x: margin,
-    y: y - titleSize,
+    y: titleY,
     size: titleSize,
     font: fontBold,
     color: rgb(0, 0, 0)
   });
-  // extra spacing under title
-  y -= titleSize + 20;
+  titleY -= titleSize + 4;
+}
+
+// extra spacing under wrapped title
+y = titleY - 10;
 
   function ensureSpace(required: number) {
     if (y - required < margin) {
@@ -479,7 +521,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     }
   }
 
-  function wrapPreserveLines(
+function wrapPreserveLines(
   text: string,
   maxWidth: number,
   size: number,
