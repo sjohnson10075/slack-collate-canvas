@@ -388,8 +388,12 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const groups: Group[] = [];
 
   for (const m of messages) {
-  // Never include the root/header message as a numbered work item
+  // Never include the root/header message
   if ((m as any).ts === root_ts) continue;
+
+  // Never include this bot's own progress/status messages
+  if ((m as any).ts === progress_ts) continue;
+  if ((m as any).bot_id) continue;
 
   const files = ((m as any).files as Array<any> | undefined) || [];
 
