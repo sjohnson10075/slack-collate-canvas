@@ -479,29 +479,51 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     }
   }
 
-  function wrap(
-    text: string,
-    maxWidth: number,
-    size: number,
-    maxLines: number
-  ): string[] {
-    const words = (text || "").replace(/\r/g, "").split(/\s+/);
-    const lines: string[] = [];
+  function wrapPreserveLines(
+  text: string,
+  maxWidth: number,
+  size: number,
+  maxLines: number
+): string[] {
+  const sourceLines = (text || "").replace(/\r/g, "").split("\n");
+  const lines: string[] = [];
+
+  for (const rawLine of sourceLines) {
+    const line = rawLine ?? "";
+
+    // Preserve intentionally blank lines
+    if (!line.trim()) {
+      lines.push("");
+      if (lines.length >= maxLines) break;
+      continue;
+    }
+
+    const words = line.split(/\s+/);
     let cur = "";
+
     for (const w of words) {
-      const test = cur ? cur + " " + w : w;
+      const test = cur ? `${cur} ${w}` : w;
       if (font.widthOfTextAtSize(test, size) <= maxWidth) {
         cur = test;
       } else {
-        if (cur) lines.push(cur);
+        if (cur) {
+          lines.push(cur);
+          if (lines.length >= maxLines) break;
+        }
         cur = w;
-        if (lines.length >= maxLines - 1) break;
       }
     }
-    if (cur) lines.push(cur);
-    return lines;
+
+    if (lines.length >= maxLines) break;
+
+    if (cur) {
+      lines.push(cur);
+      if (lines.length >= maxLines) break;
+    }
   }
 
+  return lines.slice(0, maxLines);
+}
   async function drawTile(
     x: number,
     topY: number,
@@ -555,25 +577,25 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     const num = idx + 1;
 
     const englishBlock = `${num}. ${g.caption || ""}`;
-    const capLines = wrap(
-      englishBlock,
-      contentW,
-      captionSize,
-      maxCaptionLines
-    );
+    const capLines = wrapPreserveLines(
+  englishBlock,
+  contentW,
+  captionSize,
+  maxCaptionLines
+);
     const capHeight = capLines.length
       ? capLines.length * lineH + 2
       : 0;
 
     const esLines =
-      ADD_SPANISH && g.captionEs
-        ? wrap(
-            g.captionEs,
-            contentW,
-            captionEsSize,
-            maxCaptionEsLines
-          )
-        : [];
+  ADD_SPANISH && g.captionEs
+    ? wrapPreserveLines(
+        g.captionEs,
+        contentW,
+        captionEsSize,
+        maxCaptionEsLines
+      )
+    : [];
     const esHeight = esLines.length
       ? esLines.length * lineHes + 6
       : 0;
