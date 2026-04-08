@@ -469,6 +469,15 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
 
   let page = addPageNoHeader();
   let y = pageH - margin;
+
+  function sanitizePdfText(text: string): string {
+  return (text || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
   
 function wrapSimple(
   text: string,
@@ -501,7 +510,7 @@ function wrapSimple(
 }
   
   // Title once, top of first page, wrapped to page width
-const titleLines = wrapSimple(niceTitle, contentW, titleSize, 4);
+const titleLines = wrapSimple(sanitizePdfText(niceTitle), contentW, titleSize, 4);
 
 let titleY = y - titleSize;
 for (const line of titleLines) {
@@ -653,7 +662,7 @@ function wrapPreserveLines(
     if (capHeight) {
       let yy = y - captionSize;
       for (const line of capLines) {
-        page.drawText(line, {
+        page.drawText(sanitizePdfText(line), {
           x: margin,
           y: yy,
           size: captionSize,
@@ -669,7 +678,7 @@ function wrapPreserveLines(
     if (esLines.length) {
       let yy = y - captionEsSize;
       for (const line of esLines) {
-        page.drawText(line, {
+        page.drawText(sanitizePdfText(line), {
           x: margin,
           y: yy,
           size: captionEsSize,
