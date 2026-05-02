@@ -637,16 +637,24 @@ function wrapPreserveLines(
   } catch (err: any) {
     console.error("PDF image error:", err?.message || err);
 
-    page.drawText("[image error]", {
-      x,
-      y: topY - lineH,
-      size: captionSize,
-      font,
-      color: rgb(0.4, 0, 0)
-    });
+    page.drawText("[image not supported — open in Slack]", {
+  x,
+  y: topY - lineH,
+  size: captionSize,
+  font,
+  color: rgb(0.4, 0, 0)
+});
 
-    return tileHMax;
-  }
+// Add a link to the file
+const permalink = await fetchFilePermalink(client, fileId);
+if (permalink) {
+  page.drawText(permalink, {
+    x,
+    y: topY - lineH - 14,
+    size: 9,
+    font,
+    color: rgb(0, 0, 1)
+  });
 }
   
   // number + captions + Spanish + images
