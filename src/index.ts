@@ -605,18 +605,20 @@ function wrapPreserveLines(
     let img;
 
     try {
-      // your ORIGINAL working pipeline
-      const jpg = await compressToJpeg(orig, 1800);
-      img = await pdf.embedJpg(jpg);
-    } catch {
-      // ONLY fallback for bad HEICs
-      const jpg = await sharp(orig)
-        .rotate()
-        .jpeg({ quality: 80 })
-        .toBuffer();
+  const jpg = await compressToJpeg(orig, 1800);
+  img = await pdf.embedJpg(jpg);
+} catch {
+  try {
+    const jpg = await sharp(orig)
+      .rotate()
+      .jpeg({ quality: 80 })
+      .toBuffer();
 
-      img = await pdf.embedJpg(jpg);
-    }
+    img = await pdf.embedJpg(jpg);
+  } catch (e) {
+    throw e; // let outer catch handle it cleanly
+  }
+}
 
     const iw = img.width;
     const ih = img.height;
