@@ -183,6 +183,34 @@ async function downloadOriginal(client: any, botToken: string, fileId: string): 
     return null;
   }
 }
+
+async function downloadSlackPreview(client: any, botToken: string, fileId: string): Promise<Buffer | null> {
+  try {
+    const info = await client.apiCall("files.info", { file: fileId }) as any;
+    const f = info?.file || {};
+
+    const url: string | undefined =
+      f.thumb_2048 ||
+      f.thumb_1920 ||
+      f.thumb_1600 ||
+      f.thumb_1024 ||
+      f.thumb_960 ||
+      f.thumb_720 ||
+      f.thumb_480 ||
+      f.thumb_360;
+
+    if (!url) return null;
+
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${botToken}` } } as any);
+    if (!res.ok) return null;
+
+    const ab = await res.arrayBuffer();
+    return Buffer.from(ab);
+  } catch {
+    return null;
+  }
+}
+
 // =======================================================
 // SHORTCUT A: Collate thread to Canvas
 // =======================================================
@@ -580,51 +608,76 @@ function wrapPreserveLines(
   return lines.slice(0, maxLines);
 }
   async function drawTile(
-    x: number,
-    topY: number,
-    fileId: string
-  ): Promise<number> {
-    const orig = await downloadOriginal(
-      client,
-      (process as any).env.SLACK_BOT_TOKEN as string,
-      fileId
-    );
-    if (!orig) {
-      page.drawText("[download failed]", {
-        x,
-        y: topY - lineH,
-        size: captionSize,
-        font,
-        color: rgb(0.4, 0, 0)
-      });
-      return tileHMax;
-    }
-    try {
-      const jpg = await compressToJpeg(orig, 1800);
-      const img = await pdf.embedJpg(jpg);
-      const iw = img.width,
-        ih = img.height;
-      const scale = Math.min(tileW / iw, tileHMax / ih);
-      const w = iw * scale,
-        h = ih * scale;
-      page.drawImage(img, {
-        x,
-        y: topY - h,
-        width: w,
-        height: h
-      });
-      return h;
-    } catch {
-      page.drawText("[image error]", {
-        x,
-        y: topY - lineH,
-        size: captionSize,
-        font,
-        color: rgb(0.4, 0, 0)
-      });
-      return tileHMax;
-    }
+  x: number,
+  topY: number,
+  fileId: string
+): Promise<number> {
+  const orig = await downloadOriginal(
+    client,
+    (process as any).env.SLACK_BOT_TOKEN as string,
+    fileId
+  );
+
+  if (!orig) {
+    page.drawText("[download failed]", {
+      x,
+      y: topY - lineH,
+      size: captionSize,
+      font,
+      color: rgb(0.4, 0, 0)
+    });
+    return tileHMax;
   }
+
+  try {
+    let jpg: Buffer;
+
+    try {
+      // Original working pipeline
+      jpg = await compressToJpeg(orig, 1800);
+    } catch {
+      // Fallback for HEIC files Render cannot decode:
+      // use Slack's generated preview image instead
+      const preview = await downloadSlackPreview(
+        client,
+        (process as any).env.SLACK_BOT_TOKEN as string,
+        fileId
+      );
+
+      if (!preview) throw new Error("No Slack preview available for unsupported image");
+
+      jpg = await compressToJpeg(preview, 1800);
+    }
+
+    const img = await pdf.embedJpg(jpg);
+    const iw = img.width,
+      ih = img.height;
+    const scale = Math.min(tileW / iw, tileHMax / ih);
+    const w = iw * scale,
+      h = ih * scale;
+
+    page.drawImage(img, {
+      x,
+      y: topY - h,
+      width: w,
+      height: h
+    });
+
+    return h;
+  } catch (err: any) {
+    console.error("PDF image error:", err?.message || err);
+
+    page.drawText("[image error]", {
+      x,
+      y: topY - lineH,
+      size: captionSize,
+      font,
+      color: rgb(0.4, 0, 0)
+    });
+
+    return tileHMax;
+  }
+}
 
   // number + captions + Spanish + images
   for (let idx = 0; idx < groups.length; idx++) {
