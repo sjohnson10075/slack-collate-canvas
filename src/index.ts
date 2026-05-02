@@ -605,29 +605,34 @@ function wrapPreserveLines(
     let img;
 
     try {
-      const jpg = await compressToJpeg(orig, 1800);
-      img = await pdf.embedJpg(jpg);
-    } catch {
-      try {
-        img = await pdf.embedJpg(orig);
-      } catch {
-        img = await pdf.embedPng(orig);
-      }
-    }
+      let img;
 
-    const iw = img.width;
-    const ih = img.height;
+try {
+  const jpg = await compressToJpeg(orig, 1800);
+  img = await pdf.embedJpg(jpg);
+} catch {
+  // fallback ONLY if normal pipeline fails
+  const jpg = await sharp(orig)
+    .rotate()
+    .jpeg({ quality: 80 })
+    .toBuffer();
 
-    const scale = Math.min(tileW / iw, tileHMax / ih);
-    const w = iw * scale;
-    const h = ih * scale;
+  img = await pdf.embedJpg(jpg);
+}
 
-    page.drawImage(img, {
-      x,
-      y: topY - h,
-      width: w,
-      height: h
-    });
+const iw = img.width;
+const ih = img.height;
+
+const scale = Math.min(tileW / iw, tileHMax / ih);
+const w = iw * scale;
+const h = ih * scale;
+
+page.drawImage(img, {
+  x,
+  y: topY - h,
+  width: w,
+  height: h
+});
 
     return h;
 
