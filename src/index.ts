@@ -600,31 +600,45 @@ function wrapPreserveLines(
       return tileHMax;
     }
     try {
-      const jpg = await compressToJpeg(orig, 1800);
-      const img = await pdf.embedJpg(jpg);
-      const iw = img.width,
-        ih = img.height;
-      const scale = Math.min(tileW / iw, tileHMax / ih);
-      const w = iw * scale,
-        h = ih * scale;
-      page.drawImage(img, {
-        x,
-        y: topY - h,
-        width: w,
-        height: h
-      });
-      return h;
+  let img;
+
+  try {
+    const jpg = await compressToJpeg(orig, 1800);
+    img = await pdf.embedJpg(jpg);
+  } catch {
+    try {
+      img = await pdf.embedJpg(orig);
     } catch {
-      page.drawText("[image error]", {
-        x,
-        y: topY - lineH,
-        size: captionSize,
-        font,
-        color: rgb(0.4, 0, 0)
-      });
-      return tileHMax;
+      img = await pdf.embedPng(orig);
     }
   }
+
+  const iw = img.width,
+        ih = img.height;
+  const scale = Math.min(tileW / iw, tileHMax / ih);
+  const w = iw * scale,
+        h = ih * scale;
+
+  page.drawImage(img, {
+    x,
+    y: topY - h,
+    width: w,
+    height: h
+  });
+
+  return h;
+
+} catch (err: any) {
+  console.error("PDF image error:", err?.message || err);
+  page.drawText("[image error]", {
+    x,
+    y: topY - lineH,
+    size: captionSize,
+    font,
+    color: rgb(0.4, 0, 0)
+  });
+  return tileHMax;
+}
 
   // number + captions + Spanish + images
   for (let idx = 0; idx < groups.length; idx++) {
