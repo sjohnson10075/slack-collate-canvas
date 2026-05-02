@@ -580,64 +580,70 @@ function wrapPreserveLines(
   return lines.slice(0, maxLines);
 }
   async function drawTile(
-    x: number,
-    topY: number,
-    fileId: string
-  ): Promise<number> {
-    const orig = await downloadOriginal(
-      client,
-      (process as any).env.SLACK_BOT_TOKEN as string,
-      fileId
-    );
-    if (!orig) {
-      page.drawText("[download failed]", {
-        x,
-        y: topY - lineH,
-        size: captionSize,
-        font,
-        color: rgb(0.4, 0, 0)
-      });
-      return tileHMax;
-    }
-    try {
-  let img;
+  x: number,
+  topY: number,
+  fileId: string
+): Promise<number> {
+  const orig = await downloadOriginal(
+    client,
+    (process as any).env.SLACK_BOT_TOKEN as string,
+    fileId
+  );
 
-  try {
-    const jpg = await compressToJpeg(orig, 1800);
-    img = await pdf.embedJpg(jpg);
-  } catch {
-    try {
-      img = await pdf.embedJpg(orig);
-    } catch {
-      img = await pdf.embedPng(orig);
-    }
+  if (!orig) {
+    page.drawText("[download failed]", {
+      x,
+      y: topY - lineH,
+      size: captionSize,
+      font,
+      color: rgb(0.4, 0, 0)
+    });
+    return tileHMax;
   }
 
-  const iw = img.width,
-        ih = img.height;
-  const scale = Math.min(tileW / iw, tileHMax / ih);
-  const w = iw * scale,
-        h = ih * scale;
+  try {
+    let img;
 
-  page.drawImage(img, {
-    x,
-    y: topY - h,
-    width: w,
-    height: h
-  });
+    try {
+      const jpg = await compressToJpeg(orig, 1800);
+      img = await pdf.embedJpg(jpg);
+    } catch {
+      try {
+        img = await pdf.embedJpg(orig);
+      } catch {
+        img = await pdf.embedPng(orig);
+      }
+    }
 
-  return h;
+    const iw = img.width;
+    const ih = img.height;
 
-} catch (err: any) {
-  console.error("PDF image error:", err?.message || err);
-  page.drawText("[image error]", {
-    x,
-    y: topY - lineH,
-    size: captionSize,
-    font,
-    color: rgb(0.4, 0, 0)
-  });
-  return tileHMax;
+    const scale = Math.min(tileW / iw, tileHMax / ih);
+    const w = iw * scale;
+    const h = ih * scale;
+
+    page.drawImage(img, {
+      x,
+      y: topY - h,
+      width: w,
+      height: h
+    });
+
+    return h;
+
+  } catch (err: any) {
+    console.error("PDF image error:", err?.message || err);
+
+    page.drawText("[image error]", {
+      x,
+      y: topY - lineH,
+      size: captionSize,
+      font,
+      color: rgb(0.4, 0, 0)
+    });
+
+    return tileHMax;
+  }
 }
 
   // number + captions + Spanish + images
