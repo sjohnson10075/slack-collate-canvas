@@ -605,34 +605,32 @@ function wrapPreserveLines(
     let img;
 
     try {
-      let img;
+      // your ORIGINAL working pipeline
+      const jpg = await compressToJpeg(orig, 1800);
+      img = await pdf.embedJpg(jpg);
+    } catch {
+      // ONLY fallback for bad HEICs
+      const jpg = await sharp(orig)
+        .rotate()
+        .jpeg({ quality: 80 })
+        .toBuffer();
 
-try {
-  const jpg = await compressToJpeg(orig, 1800);
-  img = await pdf.embedJpg(jpg);
-} catch {
-  // fallback ONLY if normal pipeline fails
-  const jpg = await sharp(orig)
-    .rotate()
-    .jpeg({ quality: 80 })
-    .toBuffer();
+      img = await pdf.embedJpg(jpg);
+    }
 
-  img = await pdf.embedJpg(jpg);
-}
+    const iw = img.width;
+    const ih = img.height;
 
-const iw = img.width;
-const ih = img.height;
+    const scale = Math.min(tileW / iw, tileHMax / ih);
+    const w = iw * scale;
+    const h = ih * scale;
 
-const scale = Math.min(tileW / iw, tileHMax / ih);
-const w = iw * scale;
-const h = ih * scale;
-
-page.drawImage(img, {
-  x,
-  y: topY - h,
-  width: w,
-  height: h
-});
+    page.drawImage(img, {
+      x,
+      y: topY - h,
+      width: w,
+      height: h
+    });
 
     return h;
 
@@ -650,7 +648,7 @@ page.drawImage(img, {
     return tileHMax;
   }
 }
-
+  
   // number + captions + Spanish + images
   for (let idx = 0; idx < groups.length; idx++) {
     const g = groups[idx];
