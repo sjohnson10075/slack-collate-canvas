@@ -580,27 +580,52 @@ function wrapPreserveLines(
   return lines.slice(0, maxLines);
 }
   async function drawTile(
-  x: number,
-  topY: number,
-  fileId: string
-): Promise<number> {
-  const orig = await downloadOriginal(
-    client,
-    (process as any).env.SLACK_BOT_TOKEN as string,
-    fileId
-  );
-
-  if (!orig) {
-    page.drawText("[download failed]", {
-      x,
-      y: topY - lineH,
-      size: captionSize,
-      font,
-      color: rgb(0.4, 0, 0)
-    });
-    return tileHMax;
+    x: number,
+    topY: number,
+    fileId: string
+  ): Promise<number> {
+    const orig = await downloadOriginal(
+      client,
+      (process as any).env.SLACK_BOT_TOKEN as string,
+      fileId
+    );
+    if (!orig) {
+      page.drawText("[download failed]", {
+        x,
+        y: topY - lineH,
+        size: captionSize,
+        font,
+        color: rgb(0.4, 0, 0)
+      });
+      return tileHMax;
+    }
+    try {
+      const jpg = await compressToJpeg(orig, 1800);
+      const img = await pdf.embedJpg(jpg);
+      const iw = img.width,
+        ih = img.height;
+      const scale = Math.min(tileW / iw, tileHMax / ih);
+      const w = iw * scale,
+        h = ih * scale;
+      page.drawImage(img, {
+        x,
+        y: topY - h,
+        width: w,
+        height: h
+      });
+      return h;
+    } catch {
+      page.drawText("[image error]", {
+        x,
+        y: topY - lineH,
+        size: captionSize,
+        font,
+        color: rgb(0.4, 0, 0)
+      });
+      return tileHMax;
+    }
   }
-    
+
   // number + captions + Spanish + images
   for (let idx = 0; idx < groups.length; idx++) {
     const g = groups[idx];
