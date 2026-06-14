@@ -393,7 +393,7 @@ bolt.event("reaction_added", async ({ event, client, logger }) => {
 // =======================================================
 // SHORTCUT B: Export thread as PDF
 // =======================================================
-bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
+bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
   await ack();
   const botToken = process.env.SLACK_BOT_TOKEN as string;
   const { channel, message_ts, thread_ts } = shortcut as any;
