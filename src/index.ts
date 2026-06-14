@@ -398,7 +398,15 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client, logger }) => {
   const botToken = process.env.SLACK_BOT_TOKEN as string;
   const { channel, message_ts, thread_ts } = shortcut as any;
   const root_ts = thread_ts || message_ts;
-  const channel_id = channel.id as string;
+const channel_id = channel.id as string;
+
+console.log("PDF EXPORT STARTED", {
+  channel_id,
+  root_ts
+});
+
+// progress message
+const startMsg = await client.chat.postMessage({
 
   // progress message
   const startMsg = await client.chat.postMessage({
