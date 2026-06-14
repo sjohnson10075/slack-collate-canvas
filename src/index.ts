@@ -126,6 +126,7 @@ async function exportPdfFromThread(
 ): Promise<void> {
   const { channel_id, root_ts } = input;
   const client = input.client;
+  const botToken = process.env.SLACK_BOT_TOKEN as string;
 
   console.log("EXPORT PDF FUNCTION CALLED", {
     channel_id,
