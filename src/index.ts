@@ -159,6 +159,12 @@ console.log("THREAD TITLE", {
 console.log("FILE BASE", {
   fileBase
 });
+
+  const filename = `${fileBase}.pdf`;
+
+console.log("PDF FILENAME", {
+  filename
+});
   
 console.log("THREAD READ SUCCESS", {
   message_count: messages.length
