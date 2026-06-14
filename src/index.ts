@@ -382,7 +382,10 @@ bolt.event("reaction_added", async ({ event, client, logger }) => {
       text: "✅ workorder_auto emoji detected."
     });
 
-    console.log("WORKORDER AUTO EMOJI DETECTED");
+    console.log("WORKORDER AUTO EMOJI DETECTED", {
+  channel_id,
+  message_ts
+});
   } catch (err: any) {
     (logger || console).error(
       "workorder_auto error:",
