@@ -151,6 +151,14 @@ console.log("THREAD ROOT TEXT", {
 console.log("THREAD TITLE", {
   niceTitle
 });
+
+  const fileBase = sanitizeForFilename(
+  rootText || `PrintExport_${new Date().toISOString().slice(0, 10)}`
+);
+
+console.log("FILE BASE", {
+  fileBase
+});
   
 console.log("THREAD READ SUCCESS", {
   message_count: messages.length
