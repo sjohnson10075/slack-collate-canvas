@@ -398,6 +398,13 @@ bolt.event("reaction_added", async ({ event, client, logger }) => {
   channel_id,
   message_ts
 });
+    
+    await exportPdfFromThread({
+  client,
+  channel_id,
+  root_ts: message_ts
+});
+    
   } catch (err: any) {
     (logger || console).error(
       "workorder_auto error:",
