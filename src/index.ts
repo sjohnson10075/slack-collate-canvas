@@ -115,6 +115,12 @@ async function translateToEs(text: string): Promise<string> {
   }
 }
 
+type ExportPdfInput = {
+  client: any;
+  channel_id: string;
+  root_ts: string;
+};
+
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
   return await sharp(buf)
     .rotate()
