@@ -121,6 +121,12 @@ type ExportPdfInput = {
   root_ts: string;
 };
 
+async function exportPdfFromThread(
+  input: ExportPdfInput
+): Promise<void> {
+  console.log("EXPORT PDF FUNCTION CALLED", input);
+}
+
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
   return await sharp(buf)
     .rotate()
