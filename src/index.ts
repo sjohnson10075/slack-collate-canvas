@@ -139,8 +139,15 @@ async function exportPdfFromThread(
   limit: 200
 });
 
+  const messages = replies.messages || [];
+const rootText = findRootText(messages, root_ts);
+
+console.log("THREAD ROOT TEXT", {
+  rootText
+});
+  
 console.log("THREAD READ SUCCESS", {
-  message_count: replies.messages?.length || 0
+  message_count: messages.length
 });
 }
 
