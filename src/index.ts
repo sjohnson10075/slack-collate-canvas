@@ -379,7 +379,7 @@ bolt.event("reaction_added", async ({ event, client, logger }) => {
     await client.chat.postMessage({
       channel: channel_id,
       thread_ts: message_ts,
-      text: "✅ workorder_auto emoji detected."
+      text: "✅ Auto Work Order triggered. Next step will be PDF generation."
     });
 
     console.log("WORKORDER AUTO EMOJI DETECTED", {
