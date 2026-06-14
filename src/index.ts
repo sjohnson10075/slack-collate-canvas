@@ -132,6 +132,16 @@ async function exportPdfFromThread(
     channel_id,
     root_ts
   });
+  
+  const replies = await client.conversations.replies({
+  channel: channel_id,
+  ts: root_ts,
+  limit: 200
+});
+
+console.log("THREAD READ SUCCESS", {
+  message_count: replies.messages?.length || 0
+});
 }
 
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
