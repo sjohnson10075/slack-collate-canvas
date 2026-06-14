@@ -125,6 +125,7 @@ async function exportPdfFromThread(
   input: ExportPdfInput
 ): Promise<void> {
   const { channel_id, root_ts } = input;
+  const client = input.client;
 
   console.log("EXPORT PDF FUNCTION CALLED", {
     channel_id,
