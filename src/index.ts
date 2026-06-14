@@ -145,6 +145,12 @@ const rootText = findRootText(messages, root_ts);
 console.log("THREAD ROOT TEXT", {
   rootText
 });
+
+  const niceTitle = shortTitle(rootText || "Export");
+
+console.log("THREAD TITLE", {
+  niceTitle
+});
   
 console.log("THREAD READ SUCCESS", {
   message_count: messages.length
