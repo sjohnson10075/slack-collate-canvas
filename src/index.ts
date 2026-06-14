@@ -363,7 +363,33 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     (logger || console).error("modal submit error:", e?.data || e?.message || e);
   }
 });
+// =======================================================
+// EMOJI TRIGGER TEST
+// =======================================================
+bolt.event("reaction_added", async ({ event, client, logger }) => {
+  try {
+    const e = event as any;
 
+    if (e.reaction !== "work-orders-bot") return;
+    if (e.item?.type !== "message") return;
+
+    const channel_id = e.item.channel;
+    const message_ts = e.item.ts;
+
+    await client.chat.postMessage({
+      channel: channel_id,
+      thread_ts: message_ts,
+      text: "✅ workorder_auto emoji detected."
+    });
+
+    console.log("WORKORDER AUTO EMOJI DETECTED");
+  } catch (err: any) {
+    (logger || console).error(
+      "workorder_auto error:",
+      err?.data || err?.message || err
+    );
+  }
+});
 // =======================================================
 // SHORTCUT B: Export thread as PDF
 // =======================================================
