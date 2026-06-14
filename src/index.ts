@@ -405,9 +405,6 @@ console.log("PDF EXPORT STARTED", {
   root_ts
 });
 
-// progress message
-const startMsg = await client.chat.postMessage({
-
   // progress message
   const startMsg = await client.chat.postMessage({
     channel: channel_id,
