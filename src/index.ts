@@ -124,7 +124,12 @@ type ExportPdfInput = {
 async function exportPdfFromThread(
   input: ExportPdfInput
 ): Promise<void> {
-  console.log("EXPORT PDF FUNCTION CALLED", input);
+  const { channel_id, root_ts } = input;
+
+  console.log("EXPORT PDF FUNCTION CALLED", {
+    channel_id,
+    root_ts
+  });
 }
 
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
