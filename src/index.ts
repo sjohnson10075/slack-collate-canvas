@@ -549,7 +549,13 @@ if (!up2?.ok) {
   throw new Error(up2?.error || "pdf_upload_failed");
 }
 
-console.log("AUTO PDF UPLOAD SUCCESS RAW", JSON.stringify(up2, null, 2));
+const uploadedPdf = up2?.files?.[0]?.files?.[0];
+
+console.log("AUTO PDF UPLOAD SUCCESS", {
+  file_id: uploadedPdf?.id || null,
+  permalink: uploadedPdf?.permalink || null,
+  url_private_download: uploadedPdf?.url_private_download || null
+});
 }
 
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
