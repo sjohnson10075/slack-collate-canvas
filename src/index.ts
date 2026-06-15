@@ -659,6 +659,49 @@ async function downloadSlackPreview(client: any, botToken: string, fileId: strin
   }
 }
 
+async function createAsanaWorkOrderTask(input: {
+  taskName: string;
+  pdfUrl: string;
+  slackPermalink?: string | null;
+}): Promise<string> {
+  const asanaPat = process.env.ASANA_PAT;
+  const projectGid = process.env.ASANA_WORK_ORDERS_PROJECT_ID;
+
+  if (!asanaPat) throw new Error("Missing ASANA_PAT");
+  if (!projectGid) throw new Error("Missing ASANA_WORK_ORDERS_PROJECT_ID");
+
+  const resp = await fetch("https://app.asana.com/api/1.0/tasks", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${asanaPat}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      data: {
+        name: input.taskName,
+        projects: [projectGid],
+        notes: [
+          "Auto-generated from Slack Work Order thread.",
+          input.slackPermalink ? `Slack thread: ${input.slackPermalink}` : "",
+          `PDF: ${input.pdfUrl}`
+        ].filter(Boolean).join("\n")
+      }
+    })
+  } as any);
+
+  const data = await resp.json();
+
+  if (!resp.ok) {
+    console.error("ASANA TASK CREATE FAILED", data);
+    throw new Error(data?.errors?.[0]?.message || "asana_task_create_failed");
+  }
+
+  const taskGid = data?.data?.gid;
+  console.log("ASANA TASK CREATED", { taskGid });
+
+  return taskGid;
+}
+
 // =======================================================
 // SHORTCUT A: Collate thread to Canvas
 // =======================================================
