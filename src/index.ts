@@ -393,7 +393,13 @@ console.log("DOWNLOAD RESULT", {
 
     try {
       // Original working pipeline
-      jpg = await compressToJpeg(orig, 1800);
+console.log("JPEG COMPRESS STARTED", { fileId });
+jpg = await compressToJpeg(orig, 1800);
+console.log("JPEG COMPRESS DONE", {
+  fileId,
+  bytes: jpg.length
+});
+      
     } catch {
       // Fallback for HEIC files Render cannot decode:
       // use Slack's generated preview image instead
