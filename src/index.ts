@@ -755,11 +755,19 @@ async function createAsanaWorkOrderTask(input: {
       Authorization: `Bearer ${asanaPat}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({
-      data: {
-        name: input.taskName,
-        projects: [projectGid],
-        notes: [
+   data: {
+  name: input.taskName,
+  projects: [projectGid],
+
+  custom_fields: CHANNEL_TO_CLIENT_OPTION_GID[input.channelId]
+    ? {
+        [RELATED_CLIENT_FIELD_GID]:
+          CHANNEL_TO_CLIENT_OPTION_GID[input.channelId]
+      }
+    : {},
+
+  notes: [
+    
           "Auto-generated from Slack Work Order thread.",
           input.slackPermalink ? `Slack thread: ${input.slackPermalink}` : "",
           `PDF: ${input.pdfUrl}`
