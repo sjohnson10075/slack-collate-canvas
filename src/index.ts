@@ -265,7 +265,8 @@ groups.push({
   captionEs,
   fileIds
 });
-
+}
+  
 console.log("GROUPS BUILT", {
   group_count: groups.length
 });
