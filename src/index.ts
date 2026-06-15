@@ -528,7 +528,30 @@ console.log("JPEG COMPRESS DONE", {
   }
 
   const pdfBytes = await pdf.save();
-  const bodyBuf = Buffer.from(pdfBytes);
+const bodyBuf = Buffer.from(pdfBytes);
+
+console.log("AUTO PDF BYTES READY", {
+  bytes: bodyBuf.length
+});
+
+const up2 = await (client as any).files.uploadV2({
+  channel_id,
+  thread_ts: root_ts,
+  filename,
+  initial_comment: `📄 ${niceTitle}`,
+  file: bodyBuf,
+  content_type: "application/pdf",
+  title: niceTitle
+});
+
+if (!up2?.ok) {
+  console.error("AUTO PDF UPLOAD FAILED", up2);
+  throw new Error(up2?.error || "pdf_upload_failed");
+}
+
+console.log("AUTO PDF UPLOAD SUCCESS", {
+  file_id: up2?.file?.id || up2?.files?.[0]?.id || null
+});
 }
 
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
