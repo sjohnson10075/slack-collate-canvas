@@ -174,6 +174,39 @@ type Group = {
 
 const groups: Group[] = [];
 
+for (const m of messages) {
+  // Never include the root/header message
+  if ((m as any).ts === root_ts) continue;
+
+  // Never include bot messages
+  if ((m as any).bot_id) continue;
+
+  const files = ((m as any).files as Array<any> | undefined) || [];
+
+  const caption =
+    (m as any).text?.trim() ||
+    (files[0]?.initial_comment?.comment?.trim?.() ?? "") ||
+    (files[0]?.title?.trim?.() ?? "");
+
+  const fileIds: string[] = [];
+
+  for (const f of files) {
+    if (!/^image\//.test(f.mimetype || "")) continue;
+    fileIds.push(f.id);
+  }
+
+  if (!caption && !fileIds.length) continue;
+
+  groups.push({
+    caption,
+    fileIds
+  });
+}
+
+console.log("GROUPS BUILT", {
+  group_count: groups.length
+});
+  
 console.log("GROUP SETUP READY");
   
 console.log("THREAD READ SUCCESS", {
