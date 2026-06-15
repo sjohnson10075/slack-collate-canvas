@@ -556,6 +556,11 @@ console.log("AUTO PDF UPLOAD SUCCESS", {
   permalink: uploadedPdf?.permalink || null,
   url_private_download: uploadedPdf?.url_private_download || null
 });
+
+console.log("ASANA CONFIG CHECK", {
+  has_pat: !!process.env.ASANA_PAT,
+  project_id: process.env.ASANA_WORK_ORDERS_PROJECT_ID || null
+});
 }
 
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
