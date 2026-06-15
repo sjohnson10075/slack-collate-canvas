@@ -712,6 +712,41 @@ async function createAsanaWorkOrderTask(input: {
   return taskGid;
 }
 
+async function attachPdfToAsanaTask(input: {
+  taskGid: string;
+  filename: string;
+  pdfBuffer: Buffer;
+}): Promise<void> {
+  const asanaPat = process.env.ASANA_PAT;
+  if (!asanaPat) throw new Error("Missing ASANA_PAT");
+
+  const form = new FormData();
+  form.append("file", new Blob([input.pdfBuffer], { type: "application/pdf" }), input.filename);
+
+  const resp = await fetch(
+    `https://app.asana.com/api/1.0/tasks/${input.taskGid}/attachments`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${asanaPat}`
+      },
+      body: form as any
+    } as any
+  );
+
+  const data = await resp.json();
+
+  if (!resp.ok) {
+    console.error("ASANA PDF ATTACH FAILED", data);
+    throw new Error(data?.errors?.[0]?.message || "asana_pdf_attach_failed");
+  }
+
+  console.log("ASANA PDF ATTACHED", {
+    taskGid: input.taskGid,
+    attachmentGid: data?.data?.gid || null
+  });
+}
+
 // =======================================================
 // SHORTCUT A: Collate thread to Canvas
 // =======================================================
