@@ -206,6 +206,15 @@ for (const m of messages) {
 console.log("GROUPS BUILT", {
   group_count: groups.length
 });
+
+if (!groups.length) {
+  await client.chat.postMessage({
+    channel: channel_id,
+    thread_ts: root_ts,
+    text: "No text or images found in this thread."
+  });
+  return;
+}
   
 console.log("GROUP SETUP READY");
   
