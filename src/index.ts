@@ -749,32 +749,32 @@ async function createAsanaWorkOrderTask(input: {
   if (!asanaPat) throw new Error("Missing ASANA_PAT");
   if (!projectGid) throw new Error("Missing ASANA_WORK_ORDERS_PROJECT_ID");
 
-  const resp = await fetch("https://app.asana.com/api/1.0/tasks", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${asanaPat}`,
-      "Content-Type": "application/json"
-    },
-   data: {
-  name: input.taskName,
-  projects: [projectGid],
+  const customFields = CHANNEL_TO_CLIENT_OPTION_GID[input.channelId]
+  ? {
+      [RELATED_CLIENT_FIELD_GID]:
+        CHANNEL_TO_CLIENT_OPTION_GID[input.channelId]
+    }
+  : {};
 
-  custom_fields: CHANNEL_TO_CLIENT_OPTION_GID[input.channelId]
-    ? {
-        [RELATED_CLIENT_FIELD_GID]:
-          CHANNEL_TO_CLIENT_OPTION_GID[input.channelId]
-      }
-    : {},
-
-  notes: [
-    
-          "Auto-generated from Slack Work Order thread.",
-          input.slackPermalink ? `Slack thread: ${input.slackPermalink}` : "",
-          `PDF: ${input.pdfUrl}`
-        ].filter(Boolean).join("\n")
-      }
-    })
-  } as any);
+const resp = await fetch("https://app.asana.com/api/1.0/tasks", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${asanaPat}`,
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    data: {
+      name: input.taskName,
+      projects: [projectGid],
+      custom_fields: customFields,
+      notes: [
+        "Auto-generated from Slack Work Order thread.",
+        input.slackPermalink ? `Slack thread: ${input.slackPermalink}` : "",
+        `PDF: ${input.pdfUrl}`
+      ].filter(Boolean).join("\n")
+    }
+  })
+} as any);
 
   const data = await resp.json();
 
