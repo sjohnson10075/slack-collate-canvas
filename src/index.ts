@@ -4,6 +4,7 @@ import { App, ExpressReceiver } from "@slack/bolt";
 import fetch from "node-fetch";
 import sharp from "sharp";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import FormData from "form-data";
 
 /**
  * ENV REQUIRED (Render):
@@ -732,10 +733,14 @@ async function attachPdfToAsanaTask(input: {
   if (!asanaPat) throw new Error("Missing ASANA_PAT");
 
   const form = new FormData();
-  form.append(
+
+form.append(
   "file",
-  new Blob([input.pdfBuffer as any], { type: "application/pdf" }),
-  input.filename
+  input.pdfBuffer,
+  {
+    filename: input.filename,
+    contentType: "application/pdf"
+  }
 );
 
   const attachRes = await fetch(
