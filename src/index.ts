@@ -621,6 +621,7 @@ console.log("ASANA CONFIG CHECK", {
 const taskGid = await createAsanaWorkOrderTask({
   taskName: niceTitle,
   pdfUrl: uploadedPdf?.permalink || "",
+  channelId: channel_id,
   slackPermalink: null
 });
 
