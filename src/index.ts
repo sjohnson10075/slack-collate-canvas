@@ -1215,7 +1215,7 @@ function wrapPreserveLines(
   if (!up2?.ok) {
     return;
 }
-}
+});
 
 // =======================================================
 // SHORTCUT C: FOLLOW-UP REMINDER
