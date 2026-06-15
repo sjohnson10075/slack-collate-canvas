@@ -721,7 +721,11 @@ async function attachPdfToAsanaTask(input: {
   if (!asanaPat) throw new Error("Missing ASANA_PAT");
 
   const form = new FormData();
-  form.append("file", new Blob([input.pdfBuffer], { type: "application/pdf" }), input.filename);
+  form.append(
+  "file",
+  new Blob([new Uint8Array(input.pdfBuffer)], { type: "application/pdf" }),
+  input.filename
+);
 
   const resp = await fetch(
     `https://app.asana.com/api/1.0/tasks/${input.taskGid}/attachments`,
