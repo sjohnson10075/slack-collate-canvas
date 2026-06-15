@@ -363,6 +363,8 @@ function wrapPreserveLines(
   topY: number,
   fileId: string
 ): Promise<number> {
+  console.log("DRAW TILE STARTED", { fileId });
+    
   const orig = await downloadOriginal(
     client,
     (process as any).env.SLACK_BOT_TOKEN as string,
