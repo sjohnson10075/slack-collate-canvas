@@ -1234,26 +1234,7 @@ function wrapPreserveLines(
   const pdfBytes = await pdf.save();
   const bodyBuf = Buffer.from(pdfBytes);
 
-  // STEP 4: upload via files.uploadV2
-
-  const up2 = await (client as any).files.uploadV2({
-    channel_id,
-    thread_ts: root_ts,
-    filename,
-    initial_comment: `📄 ${niceTitle}`,
-    file: bodyBuf,
-    content_type: "application/pdf",
-    title: niceTitle
-  });
-
-if (!up2?.ok) {
-  console.error("PDF UPLOAD FAILED", up2);
-  return;
-}
-
-console.log("PDF UPLOAD SUCCESS", {
-  file_id: up2?.file?.id || up2?.files?.[0]?.id || null
-});
+  // STEP 4 will be added here later
 }
 
 // =======================================================
