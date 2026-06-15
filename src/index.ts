@@ -561,6 +561,16 @@ console.log("ASANA CONFIG CHECK", {
   has_pat: !!process.env.ASANA_PAT,
   project_id: process.env.ASANA_WORK_ORDERS_PROJECT_ID || null
 });
+
+const taskGid = await createAsanaWorkOrderTask({
+  taskName: niceTitle,
+  pdfUrl: uploadedPdf?.permalink || "",
+  slackPermalink: null
+});
+
+console.log("ASANA TASK TEST SUCCESS", {
+  taskGid
+});
 }
 
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
