@@ -550,6 +550,7 @@ if (!up2?.ok) {
 }
 
 console.log("AUTO PDF UPLOAD SUCCESS RAW", JSON.stringify(up2, null, 2));
+}
 
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
   return await sharp(buf)
