@@ -734,7 +734,7 @@ async function attachPdfToAsanaTask(input: {
   const form = new FormData();
   form.append(
   "file",
-  new Blob([new Uint8Array(input.pdfBuffer)], { type: "application/pdf" }),
+  new Blob([input.pdfBuffer as any], { type: "application/pdf" }),
   input.filename
 );
 
