@@ -371,6 +371,12 @@ function wrapPreserveLines(
     fileId
   );
 
+console.log("DOWNLOAD RESULT", {
+  fileId,
+  success: !!orig,
+  bytes: orig?.length || 0
+});
+    
   if (!orig) {
     page.drawText("[download failed]", {
       x,
