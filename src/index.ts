@@ -571,6 +571,17 @@ const taskGid = await createAsanaWorkOrderTask({
 console.log("ASANA TASK TEST SUCCESS", {
   taskGid
 });
+
+await attachPdfToAsanaTask({
+  taskGid,
+  filename,
+  pdfBuffer: bodyBuf
+});
+
+console.log("ASANA PDF ATTACH TEST SUCCESS", {
+  taskGid
+});
+  
 }
 
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
