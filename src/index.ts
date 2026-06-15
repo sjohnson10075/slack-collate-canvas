@@ -217,6 +217,8 @@ if (!groups.length) {
 }
   
 // STEP 3: build PDF
+  console.log("PDF BUILD STARTED");
+  
   const pdf = await PDFDocument.create();
   pdf.setTitle(niceTitle);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
