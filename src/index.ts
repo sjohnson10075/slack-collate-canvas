@@ -549,10 +549,7 @@ if (!up2?.ok) {
   throw new Error(up2?.error || "pdf_upload_failed");
 }
 
-console.log("AUTO PDF UPLOAD SUCCESS", {
-  file_id: up2?.file?.id || up2?.files?.[0]?.id || null
-});
-}
+console.log("AUTO PDF UPLOAD SUCCESS RAW", JSON.stringify(up2, null, 2));
 
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
   return await sharp(buf)
