@@ -216,11 +216,303 @@ if (!groups.length) {
   return;
 }
   
-console.log("GROUP SETUP READY");
+// STEP 3: build PDF
+  const pdf = await PDFDocument.create();
+  pdf.setTitle(niceTitle);
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+  const pageW = 612,
+    pageH = 792;
+  const margin = 36;
+  const contentW = pageW - margin * 2;
+  const gutter = 16;
+
+  const titleSize = 14;
+  const captionSize = 11;
+  const captionEsSize = 10;
+  const lineH = captionSize + 3;
+  const lineHes = captionEsSize + 2;
+  const maxCaptionLines = 8;
+  const maxCaptionEsLines = 8;
+
+  const tileW = Math.floor((contentW - gutter) / 2);
+  const tileHMax = 240;
+
+  function addPageNoHeader() {
+    const p = pdf.addPage([pageW, pageH]);
+    return p;
+  }
+
+  let page = addPageNoHeader();
+  let y = pageH - margin;
+
+  function sanitizePdfText(text: string): string {
+  return (text || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
   
-console.log("THREAD READ SUCCESS", {
-  message_count: messages.length
-});
+function wrapSimple(
+  text: string,
+  maxWidth: number,
+  size: number,
+  maxLines: number
+): string[] {
+  const words = (text || "").replace(/\r/g, "").split(/\s+/);
+  const lines: string[] = [];
+  let cur = "";
+
+  for (const w of words) {
+    const test = cur ? `${cur} ${w}` : w;
+    if (fontBold.widthOfTextAtSize(test, size) <= maxWidth) {
+      cur = test;
+    } else {
+      if (cur) {
+        lines.push(cur);
+        if (lines.length >= maxLines) break;
+      }
+      cur = w;
+    }
+  }
+
+  if (cur && lines.length < maxLines) {
+    lines.push(cur);
+  }
+
+  return lines.slice(0, maxLines);
+}
+  
+  // Title once, top of first page, wrapped to page width
+const titleLines = wrapSimple(sanitizePdfText(niceTitle), contentW, titleSize, 4);
+
+let titleY = y - titleSize;
+for (const line of titleLines) {
+  page.drawText(line, {
+    x: margin,
+    y: titleY,
+    size: titleSize,
+    font: fontBold,
+    color: rgb(0, 0, 0)
+  });
+  titleY -= titleSize + 4;
+}
+
+// extra spacing under wrapped title
+y = titleY - 10;
+
+  function ensureSpace(required: number) {
+    if (y - required < margin) {
+      page = addPageNoHeader();
+      y = pageH - margin;
+    }
+  }
+
+function wrapPreserveLines(
+  text: string,
+  maxWidth: number,
+  size: number,
+  maxLines: number
+): string[] {
+  const sourceLines = (text || "").replace(/\r/g, "").split("\n");
+  const lines: string[] = [];
+
+  for (const rawLine of sourceLines) {
+    const line = rawLine ?? "";
+
+    // Preserve intentionally blank lines
+    if (!line.trim()) {
+      lines.push("");
+      if (lines.length >= maxLines) break;
+      continue;
+    }
+
+    const words = line.split(/\s+/);
+    let cur = "";
+
+    for (const w of words) {
+      const test = cur ? `${cur} ${w}` : w;
+      if (font.widthOfTextAtSize(test, size) <= maxWidth) {
+        cur = test;
+      } else {
+        if (cur) {
+          lines.push(cur);
+          if (lines.length >= maxLines) break;
+        }
+        cur = w;
+      }
+    }
+
+    if (lines.length >= maxLines) break;
+
+    if (cur) {
+      lines.push(cur);
+      if (lines.length >= maxLines) break;
+    }
+  }
+
+  return lines.slice(0, maxLines);
+}
+  async function drawTile(
+  x: number,
+  topY: number,
+  fileId: string
+): Promise<number> {
+  const orig = await downloadOriginal(
+    client,
+    (process as any).env.SLACK_BOT_TOKEN as string,
+    fileId
+  );
+
+  if (!orig) {
+    page.drawText("[download failed]", {
+      x,
+      y: topY - lineH,
+      size: captionSize,
+      font,
+      color: rgb(0.4, 0, 0)
+    });
+    return tileHMax;
+  }
+
+  try {
+    let jpg: Buffer;
+
+    try {
+      // Original working pipeline
+      jpg = await compressToJpeg(orig, 1800);
+    } catch {
+      // Fallback for HEIC files Render cannot decode:
+      // use Slack's generated preview image instead
+      const preview = await downloadSlackPreview(
+        client,
+        (process as any).env.SLACK_BOT_TOKEN as string,
+        fileId
+      );
+
+      if (!preview) throw new Error("No Slack preview available for unsupported image");
+
+      jpg = await compressToJpeg(preview, 1800);
+    }
+
+    const img = await pdf.embedJpg(jpg);
+    const iw = img.width,
+      ih = img.height;
+    const scale = Math.min(tileW / iw, tileHMax / ih);
+    const w = iw * scale,
+      h = ih * scale;
+
+    page.drawImage(img, {
+      x,
+      y: topY - h,
+      width: w,
+      height: h
+    });
+
+    return h;
+  } catch (err: any) {
+    console.error("PDF image error:", err?.message || err);
+
+    page.drawText("[image error]", {
+      x,
+      y: topY - lineH,
+      size: captionSize,
+      font,
+      color: rgb(0.4, 0, 0)
+    });
+
+    return tileHMax;
+  }
+}
+
+  // number + captions + Spanish + images
+  for (let idx = 0; idx < groups.length; idx++) {
+    const g = groups[idx];
+    const num = idx + 1;
+
+    const englishBlock = `${num}. ${g.caption || ""}`;
+    const capLines = wrapPreserveLines(
+  englishBlock,
+  contentW,
+  captionSize,
+  maxCaptionLines
+);
+    const capHeight = capLines.length
+      ? capLines.length * lineH + 2
+      : 0;
+
+    const esLines =
+  ADD_SPANISH && g.captionEs
+    ? wrapPreserveLines(
+        g.captionEs,
+        contentW,
+        captionEsSize,
+        maxCaptionEsLines
+      )
+    : [];
+    const esHeight = esLines.length
+      ? esLines.length * lineHes + 6
+      : 0;
+
+    const firstRow = g.fileIds.length ? tileHMax + 14 : 0;
+    ensureSpace(capHeight + esHeight + firstRow);
+
+    // English caption
+    if (capHeight) {
+      let yy = y - captionSize;
+      for (const line of capLines) {
+        page.drawText(sanitizePdfText(line), {
+          x: margin,
+          y: yy,
+          size: captionSize,
+          font,
+          color: rgb(0, 0, 0)
+        });
+        yy -= lineH;
+      }
+      y = yy - 2;
+    }
+
+    // Spanish caption below
+    if (esLines.length) {
+      let yy = y - captionEsSize;
+      for (const line of esLines) {
+        page.drawText(sanitizePdfText(line), {
+          x: margin,
+          y: yy,
+          size: captionEsSize,
+          font,
+          color: rgb(0.2, 0.2, 0.2)
+        });
+        yy -= lineHes;
+      }
+      y = yy - 6;
+    }
+
+    // draw images 2-up
+    for (let i = 0; i < g.fileIds.length; i += 2) {
+      ensureSpace(tileHMax + 14);
+
+      const hLeft = await drawTile(margin, y, g.fileIds[i]);
+      let hRight = 0;
+      if (i + 1 < g.fileIds.length) {
+        hRight = await drawTile(margin + (contentW - gutter) / 2 + gutter, y, g.fileIds[i + 1]);
+        // NOTE: we changed x positioning here in earlier iterations; keeping consistent.
+        // But to avoid drift, let's explicitly recompute tileW each loop:
+      }
+
+      const rowH = Math.max(hLeft, hRight);
+      y -= rowH + 14;
+    }
+
+    y -= 10; // gap between groups
+  }
+
+  const pdfBytes = await pdf.save();
+  const bodyBuf = Buffer.from(pdfBytes);
 }
 
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
@@ -611,12 +903,6 @@ console.log("PDF EXPORT STARTED", {
   }
 
   // STEP 3: build PDF
-  await client.chat.update({
-    channel: channel_id,
-    ts: progress_ts,
-    text: `Step 3/4: Building PDF…`
-  });
-
   const pdf = await PDFDocument.create();
   pdf.setTitle(niceTitle);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -915,11 +1201,6 @@ function wrapPreserveLines(
   const bodyBuf = Buffer.from(pdfBytes);
 
   // STEP 4: upload via files.uploadV2
-  await client.chat.update({
-    channel: channel_id,
-    ts: progress_ts,
-    text: "Step 4/4: Uploading PDF…"
-  });
 
   const up2 = await (client as any).files.uploadV2({
     channel_id,
@@ -932,20 +1213,9 @@ function wrapPreserveLines(
   });
 
   if (!up2?.ok) {
-    await client.chat.update({
-      channel: channel_id,
-      ts: progress_ts,
-      text: `Upload failed: ${up2?.error || "unknown_error"}`
-    });
     return;
-  }
-
-  await client.chat.update({
-    channel: channel_id,
-    ts: progress_ts,
-    text: "✅ Done: PDF posted in this thread."
-  });
-});
+}
+}
 
 // =======================================================
 // SHORTCUT C: FOLLOW-UP REMINDER
