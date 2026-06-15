@@ -803,11 +803,27 @@ bolt.event("reaction_added", async ({ event, client, logger }) => {
   message_ts
 });
     
-    await exportPdfFromThread({
-  client,
-  channel_id,
-  root_ts: message_ts
-});
+    try {
+  await exportPdfFromThread({
+    client,
+    channel_id,
+    root_ts: message_ts
+  });
+
+  await client.chat.postMessage({
+    channel: channel_id,
+    thread_ts: message_ts,
+    text: "✅ PDF generation completed."
+  });
+} catch (err: any) {
+  console.error("AUTO PDF FAILED", err?.data || err?.message || err);
+
+  await client.chat.postMessage({
+    channel: channel_id,
+    thread_ts: message_ts,
+    text: `⚠️ Auto PDF failed: ${err?.message || "unknown error"}`
+  });
+}
     
   } catch (err: any) {
     (logger || console).error(
