@@ -165,6 +165,16 @@ console.log("FILE BASE", {
 console.log("PDF FILENAME", {
   filename
 });
+
+type Group = {
+  caption: string;
+  captionEs?: string;
+  fileIds: string[];
+};
+
+const groups: Group[] = [];
+
+console.log("GROUP SETUP READY");
   
 console.log("THREAD READ SUCCESS", {
   message_count: messages.length
