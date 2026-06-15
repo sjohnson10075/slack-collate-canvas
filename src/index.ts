@@ -529,6 +529,8 @@ console.log("JPEG COMPRESS DONE", {
 
   const pdfBytes = await pdf.save();
   const bodyBuf = Buffer.from(pdfBytes);
+
+  // STEP 4 will be added here later
 }
 
 async function compressToJpeg(buf: Buffer, max: number): Promise<Buffer> {
