@@ -1244,10 +1244,15 @@ function wrapPreserveLines(
     title: niceTitle
   });
 
-  if (!up2?.ok) {
-    return;
+if (!up2?.ok) {
+  console.error("PDF UPLOAD FAILED", up2);
+  return;
 }
+
+console.log("PDF UPLOAD SUCCESS", {
+  file_id: up2?.file?.id || up2?.files?.[0]?.id || null
 });
+}
 
 // =======================================================
 // SHORTCUT C: FOLLOW-UP REMINDER
