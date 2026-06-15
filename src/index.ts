@@ -738,28 +738,24 @@ async function attachPdfToAsanaTask(input: {
   input.filename
 );
 
-  const resp = await fetch(
-    `https://app.asana.com/api/1.0/tasks/${input.taskGid}/attachments`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${asanaPat}`
-      },
-      body: form as any
-    } as any
-  );
+  const attachRes = await fetch(
+  `https://app.asana.com/api/1.0/tasks/${input.taskGid}/attachments`,
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.ASANA_PAT}`
+    },
+    body: form as any
+  } as any
+);
 
-  const data = await resp.json();
-
-  if (!resp.ok) {
-    console.error("ASANA PDF ATTACH FAILED", data);
-    throw new Error(data?.errors?.[0]?.message || "asana_pdf_attach_failed");
+if (!attachRes.ok) {
+  const t = await attachRes.text();
+  console.log("Asana attachment failed:", t);
+  throw new Error(t);
+} else {
+  console.log("Attached:", input.filename);
   }
-
-  console.log("ASANA PDF ATTACHED", {
-    taskGid: input.taskGid,
-    attachmentGid: data?.data?.gid || null
-  });
 }
 
 // =======================================================
