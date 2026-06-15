@@ -253,11 +253,18 @@ for (const m of messages) {
 
   if (!caption && !fileIds.length) continue;
 
-  groups.push({
-    caption,
-    fileIds
-  });
+  let captionEs: string | undefined = undefined;
+
+if (ADD_SPANISH && caption) {
+  const res = await translateEs(caption);
+  if (res.ok && res.es) captionEs = res.es;
 }
+
+groups.push({
+  caption,
+  captionEs,
+  fileIds
+});
 
 console.log("GROUPS BUILT", {
   group_count: groups.length
