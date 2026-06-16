@@ -38,6 +38,9 @@ const bolt = new App({
   receiver
 });
 
+const PRINT_POST_FIELD_GID = "1215741454712160";
+const PRINT_POST_YES_OPTION_GID = "1215741454712161";
+
 const RELATED_CLIENT_FIELD_GID = "1212624226113795";
 
 const CHANNEL_TO_CLIENT_OPTION_GID: Record<string, string> = {
@@ -757,12 +760,16 @@ async function createAsanaWorkOrderTask(input: {
   if (!asanaPat) throw new Error("Missing ASANA_PAT");
   if (!projectGid) throw new Error("Missing ASANA_WORK_ORDERS_PROJECT_ID");
 
-  const customFields = CHANNEL_TO_CLIENT_OPTION_GID[input.channelId]
-  ? {
-      [RELATED_CLIENT_FIELD_GID]:
-        CHANNEL_TO_CLIENT_OPTION_GID[input.channelId]
-    }
-  : {};
+  const customFields = {
+  [PRINT_POST_FIELD_GID]: PRINT_POST_YES_OPTION_GID,
+
+  ...(CHANNEL_TO_CLIENT_OPTION_GID[input.channelId]
+    ? {
+        [RELATED_CLIENT_FIELD_GID]:
+          CHANNEL_TO_CLIENT_OPTION_GID[input.channelId]
+      }
+    : {})
+};
 
 const resp = await fetch("https://app.asana.com/api/1.0/tasks", {
   method: "POST",
