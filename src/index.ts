@@ -771,6 +771,8 @@ async function createAsanaWorkOrderTask(input: {
     : {})
 };
 
+console.log("CUSTOM FIELDS", customFields);
+  
 const resp = await fetch("https://app.asana.com/api/1.0/tasks", {
   method: "POST",
   headers: {
