@@ -795,6 +795,8 @@ const resp = await fetch("https://app.asana.com/api/1.0/tasks", {
 
   const data = await resp.json();
 
+  console.log("ASANA TASK RESPONSE", JSON.stringify(data, null, 2));
+
   if (!resp.ok) {
     console.error("ASANA TASK CREATE FAILED", data);
     throw new Error(data?.errors?.[0]?.message || "asana_task_create_failed");
