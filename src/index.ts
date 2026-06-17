@@ -237,8 +237,19 @@ for (const m of messages) {
   // Never include the root/header message
   if ((m as any).ts === root_ts) continue;
 
-  // Never include bot messages
-  if ((m as any).bot_id) continue;
+// Skip only this app's own status/output messages, not Slack Workflow messages
+const text = ((m as any).text || "").trim();
+
+if (
+  (m as any).bot_id &&
+  (
+    text.includes("Auto Work Order triggered") ||
+    text.includes("PDF generation completed") ||
+    text.includes("Auto PDF failed")
+  )
+) {
+  continue;
+}
 
   const files = ((m as any).files as Array<any> | undefined) || [];
 
