@@ -178,12 +178,13 @@ type ExportPdfInput = {
   client: any;
   channel_id: string;
   root_ts: string;
+  slackUser: string;
 };
 
 async function exportPdfFromThread(
   input: ExportPdfInput
 ): Promise<void> {
-  const { channel_id, root_ts } = input;
+  const { channel_id, root_ts, slackUser } = input;
   const client = input.client;
   const botToken = process.env.SLACK_BOT_TOKEN as string;
 
@@ -651,6 +652,11 @@ console.log("ASANA TASK TEST SUCCESS", {
   taskGid
 });
 
+await addSlackSubmitterComment({
+  taskGid,
+  slackUser
+});
+
 await attachPdfToAsanaTask({
   taskGid,
   filename,
@@ -858,6 +864,33 @@ if (!attachRes.ok) {
   }
 }
 
+async function addSlackSubmitterComment(input: {
+  taskGid: string;
+  slackUser: string;
+}): Promise<void> {
+  try {
+    await fetch(`https://app.asana.com/api/1.0/tasks/${input.taskGid}/stories`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.ASANA_PAT}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        data: {
+          text: `Work Order submitted via Slack by ${input.slackUser}`
+        }
+      })
+    } as any);
+
+    console.log("ASANA SUBMITTER COMMENT ADDED", {
+      taskGid: input.taskGid,
+      slackUser: input.slackUser
+    });
+  } catch (e: any) {
+    console.log("Failed to add Slack submitter comment:", e?.message || e);
+  }
+}
+
 // =======================================================
 // SHORTCUT A: Collate thread to Canvas
 // =======================================================
@@ -1022,6 +1055,7 @@ bolt.event("reaction_added", async ({ event, client, logger }) => {
 
     const channel_id = e.item.channel;
     const message_ts = e.item.ts;
+    const slackUser = e.user || "Unknown User";
 
     await client.chat.postMessage({
       channel: channel_id,
@@ -1036,10 +1070,11 @@ bolt.event("reaction_added", async ({ event, client, logger }) => {
     
     try {
   await exportPdfFromThread({
-    client,
-    channel_id,
-    root_ts: message_ts
-  });
+  client,
+  channel_id,
+  root_ts: message_ts,
+  slackUser
+});
 
   await client.chat.postMessage({
     channel: channel_id,
