@@ -1055,7 +1055,23 @@ bolt.event("reaction_added", async ({ event, client, logger }) => {
 
     const channel_id = e.item.channel;
     const message_ts = e.item.ts;
-    const slackUser = e.user || "Unknown User";
+    let slackUser = e.user || "Unknown User";
+
+try {
+  const userInfo = await client.users.info({
+    user: e.user
+  });
+
+  const profile = (userInfo as any)?.user?.profile || {};
+  slackUser =
+    profile.display_name ||
+    profile.real_name ||
+    (userInfo as any)?.user?.name ||
+    e.user ||
+    "Unknown User";
+} catch (err: any) {
+  console.log("Slack user lookup failed:", err?.data || err?.message || err);
+}
 
     await client.chat.postMessage({
       channel: channel_id,
