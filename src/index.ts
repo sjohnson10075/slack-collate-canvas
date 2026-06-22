@@ -484,8 +484,8 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   const captionEsSize = 10;
   const lineH = captionSize + 3;
   const lineHes = captionEsSize + 2;
-  const maxCaptionLines = 8;
-  const maxCaptionEsLines = 8;
+  const maxCaptionLines = 50;
+  const maxCaptionEsLines = 50;
 
   const tileW = Math.floor((contentW - gutter) / 2);
   const tileHMax = 240;
