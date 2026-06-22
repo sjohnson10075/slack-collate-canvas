@@ -504,7 +504,14 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+    .replace(/&#39;/g, "'")
+    .replace(/¼/g, "1/4")
+    .replace(/½/g, "1/2")
+    .replace(/¾/g, "3/4")
+    .replace(/⅛/g, "1/8")
+    .replace(/⅜/g, "3/8")
+    .replace(/⅝/g, "5/8")
+    .replace(/⅞/g, "7/8");
 }
   
 function wrapSimple(
@@ -684,7 +691,7 @@ function wrapPreserveLines(
     const g = groups[idx];
     const num = idx + 1;
 
-    const englishBlock = `${num}. ${g.caption || ""}`;
+    const englishBlock = sanitizePdfText(`${num}. ${g.caption || ""}`);
     const capLines = wrapPreserveLines(
   englishBlock,
   contentW,
@@ -698,7 +705,7 @@ function wrapPreserveLines(
     const esLines =
   ADD_SPANISH && g.captionEs
     ? wrapPreserveLines(
-        g.captionEs,
+        sanitizePdfText(g.captionEs),
         contentW,
         captionEsSize,
         maxCaptionEsLines
