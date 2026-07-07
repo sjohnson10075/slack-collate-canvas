@@ -93,7 +93,8 @@ const CHANNEL_TO_CLIENT_OPTION_GID: Record<string, string> = {
   "C0B45PWUTQV": "1215602158763208", // 141 Mountain View_Barker Res
   "C0B9KGTB6JH": "1215602158763209", // 4072 Polled Hereford_Lewis
   "C0899GVK30W": "1215639645557259", // 307 Jester Ct_Greene
-  "C0AT0FXP54L": "1214079498509826" // 633 Tamalpaias Ave_Katz
+  "C0AT0FXP54L": "1214079498509826", // 633 Tamalpaias Ave_Katz
+  "C0BDUAEFC80": "1215990021196418" // 328 Ridgewood_MV_Davis
 };
 
 function verifySlackSig(req: express.Request): boolean {
