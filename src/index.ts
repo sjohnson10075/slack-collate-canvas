@@ -472,6 +472,7 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
   pdf.setTitle(niceTitle);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const fontItalic = await pdf.embedFont(StandardFonts.HelveticaOblique);
 
   const pageW = 612,
     pageH = 792;
@@ -614,6 +615,59 @@ function wrapPreserveLines(
 
   return lines.slice(0, maxLines);
 }
+type StyledSpan = {
+  text: string;
+  style: "regular" | "bold" | "italic";
+};
+
+function parseSlackFormatting(text: string): StyledSpan[] {
+  const spans: StyledSpan[] = [];
+  const pattern = /(\*[^*]+\*|_[^_]+_)/g;
+
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      spans.push({
+        text: text.slice(lastIndex, match.index),
+        style: "regular"
+      });
+    }
+
+    const value = match[0];
+
+    if (value.startsWith("*")) {
+      spans.push({
+        text: value.slice(1, -1),
+        style: "bold"
+      });
+    } else {
+      spans.push({
+        text: value.slice(1, -1),
+        style: "italic"
+      });
+    }
+
+    lastIndex = pattern.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    spans.push({
+      text: text.slice(lastIndex),
+      style: "regular"
+    });
+  }
+
+  return spans;
+}
+  
+function fontForStyle(style: StyledSpan["style"]) {
+  if (style === "bold") return fontBold;
+  if (style === "italic") return fontItalic;
+  return font;
+}
+  
   async function drawTile(
   x: number,
   topY: number,
@@ -722,34 +776,48 @@ function wrapPreserveLines(
     if (capHeight) {
       let yy = y - captionSize;
       for (const line of capLines) {
-        page.drawText(sanitizePdfText(line), {
-          x: margin,
-          y: yy,
-          size: captionSize,
-          font,
-          color: rgb(0, 0, 0)
-        });
-        yy -= lineH;
-      }
-      y = yy - 2;
-    }
+  const spans = parseSlackFormatting(sanitizePdfText(line));
+  let xx = margin;
 
+  for (const span of spans) {
+    const spanFont = fontForStyle(span.style);
+
+    page.drawText(span.text, {
+      x: xx,
+      y: yy,
+      size: captionSize,
+      font: spanFont,
+      color: rgb(0, 0, 0)
+    });
+
+    xx += spanFont.widthOfTextAtSize(span.text, captionSize);
+  }
+
+  yy -= lineH;
+}
     // Spanish caption below
     if (esLines.length) {
       let yy = y - captionEsSize;
       for (const line of esLines) {
-        page.drawText(sanitizePdfText(line), {
-          x: margin,
-          y: yy,
-          size: captionEsSize,
-          font,
-          color: rgb(0.2, 0.2, 0.2)
-        });
-        yy -= lineHes;
-      }
-      y = yy - 6;
-    }
+  const spans = parseSlackFormatting(sanitizePdfText(line));
+  let xx = margin;
 
+  for (const span of spans) {
+    const spanFont = fontForStyle(span.style);
+
+    page.drawText(span.text, {
+      x: xx,
+      y: yy,
+      size: captionEsSize,
+      font: spanFont,
+      color: rgb(0.2, 0.2, 0.2)
+    });
+
+    xx += spanFont.widthOfTextAtSize(span.text, captionEsSize);
+  }
+
+  yy -= lineHes;
+}
     // draw images 2-up
     for (let i = 0; i < g.fileIds.length; i += 2) {
       ensureSpace(tileHMax + 14);
