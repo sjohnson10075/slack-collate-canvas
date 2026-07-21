@@ -745,6 +745,8 @@ function fontForStyle(style: StyledSpan["style"]) {
     const num = idx + 1;
 
     const englishBlock = sanitizePdfText(`${num}. ${g.caption || ""}`);
+    const spanishBlock = sanitizePdfText(`${num}. ${g.captionEs || ""}`);
+    
     const capLines = wrapPreserveLines(
   englishBlock,
   contentW,
@@ -758,7 +760,7 @@ function fontForStyle(style: StyledSpan["style"]) {
     const esLines =
   ADD_SPANISH && g.captionEs
     ? wrapPreserveLines(
-        sanitizePdfText(g.captionEs),
+        spanishBlock,
         contentW,
         captionEsSize,
         maxCaptionEsLines
