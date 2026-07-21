@@ -667,7 +667,6 @@ function fontForStyle(style: StyledSpan["style"]) {
   if (style === "italic") return fontItalic;
   return font;
 }
-  
   async function drawTile(
   x: number,
   topY: number,
@@ -773,52 +772,62 @@ function fontForStyle(style: StyledSpan["style"]) {
     ensureSpace(capHeight + esHeight + firstRow);
 
     // English caption
-    if (capHeight) {
-      let yy = y - captionSize;
-      for (const line of capLines) {
-  const spans = parseSlackFormatting(sanitizePdfText(line));
-  let xx = margin;
+if (capHeight) {
+  let yy = y - captionSize;
 
-  for (const span of spans) {
-    const spanFont = fontForStyle(span.style);
+  for (const line of capLines) {
+    const spans = parseSlackFormatting(sanitizePdfText(line));
+    let xx = margin;
 
-    page.drawText(span.text, {
-      x: xx,
-      y: yy,
-      size: captionSize,
-      font: spanFont,
-      color: rgb(0, 0, 0)
-    });
+    for (const span of spans) {
+      const spanFont = fontForStyle(span.style);
 
-    xx += spanFont.widthOfTextAtSize(span.text, captionSize);
+      page.drawText(span.text, {
+        x: xx,
+        y: yy,
+        size: captionSize,
+        font: spanFont,
+        color: rgb(0, 0, 0)
+      });
+
+      xx += spanFont.widthOfTextAtSize(span.text, captionSize);
+    }
+
+    yy -= lineH;
   }
 
-  yy -= lineH;
+  y = yy - 2;
 }
-    // Spanish caption below
-    if (esLines.length) {
-      let yy = y - captionEsSize;
-      for (const line of esLines) {
-  const spans = parseSlackFormatting(sanitizePdfText(line));
-  let xx = margin;
 
-  for (const span of spans) {
-    const spanFont = fontForStyle(span.style);
+// Spanish caption below
+if (esLines.length) {
+  let yy = y - captionEsSize;
 
-    page.drawText(span.text, {
-      x: xx,
-      y: yy,
-      size: captionEsSize,
-      font: spanFont,
-      color: rgb(0.2, 0.2, 0.2)
-    });
+  for (const line of esLines) {
+    const spans = parseSlackFormatting(sanitizePdfText(line));
+    let xx = margin;
 
-    xx += spanFont.widthOfTextAtSize(span.text, captionEsSize);
+    for (const span of spans) {
+      const spanFont = fontForStyle(span.style);
+
+      page.drawText(span.text, {
+        x: xx,
+        y: yy,
+        size: captionEsSize,
+        font: spanFont,
+        color: rgb(0.2, 0.2, 0.2)
+      });
+
+      xx += spanFont.widthOfTextAtSize(span.text, captionEsSize);
+    }
+
+    yy -= lineHes;
   }
 
-  yy -= lineHes;
+  y = yy - 6;
 }
-    // draw images 2-up
+
+// draw images 2-up
     for (let i = 0; i < g.fileIds.length; i += 2) {
       ensureSpace(tileHMax + 14);
 
