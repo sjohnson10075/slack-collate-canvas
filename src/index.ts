@@ -296,7 +296,7 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
 const messages = await getAllThreadReplies(
   client,
   channel_id,
-  root_ts
+  thread_ts
 );
     const messages = replies.messages || [];
 
@@ -414,12 +414,11 @@ bolt.shortcut("export_pdf", async ({ ack, shortcut, client }) => {
     ts: progress_ts,
     text: "Step 1/4: Reading thread…"
   });
-  const replies = await client.conversations.replies({
-    channel: channel_id,
-    ts: root_ts,
-    limit: 200
-  });
-  const messages = replies.messages || [];
+const messages = await getAllThreadReplies(
+  client,
+  channel_id,
+  root_ts
+);
 
   const rootText = findRootText(messages, root_ts);
   const niceTitle = shortTitle(rootText || "Export");
