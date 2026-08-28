@@ -211,6 +211,32 @@ async function downloadSlackPreview(client: any, botToken: string, fileId: strin
   }
 }
 
+async function getAllThreadReplies(
+  client: any,
+  channel: string,
+  ts: string
+): Promise<any[]> {
+  const allMessages: any[] = [];
+  let cursor: string | undefined = undefined;
+
+  do {
+    const response: any = await client.conversations.replies({
+      channel,
+      ts,
+      limit: 100,
+      ...(cursor ? { cursor } : {})
+    });
+
+    if (response.messages?.length) {
+      allMessages.push(...response.messages);
+    }
+
+    cursor = response.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+
+  return allMessages;
+}
+
 // =======================================================
 // SHORTCUT A: Collate thread to Canvas
 // =======================================================
@@ -267,11 +293,11 @@ bolt.view("collate_modal", async ({ ack, view, client, logger }) => {
     const thread_ts = meta.thread_ts as string;
     const category = (view.state.values.category_block.category_action.selected_option?.value || "other") as string;
 
-    const replies = await client.conversations.replies({
-      channel: channel_id,
-      ts: thread_ts,
-      limit: 200
-    });
+const messages = await getAllThreadReplies(
+  client,
+  channel_id,
+  root_ts
+);
     const messages = replies.messages || [];
 
     const rootText = findRootText(messages, thread_ts);
