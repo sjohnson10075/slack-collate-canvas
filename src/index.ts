@@ -298,7 +298,6 @@ const messages = await getAllThreadReplies(
   channel_id,
   thread_ts
 );
-    const messages = replies.messages || [];
 
     const rootText = findRootText(messages, thread_ts);
     const canvasTitle = shortTitle(rootText || `Collated — ${category}`);
