@@ -99,7 +99,8 @@ const CHANNEL_TO_CLIENT_OPTION_GID: Record<string, string> = {
   "C0BF0TDELKY": "1216464210126671", // 59 Barn View Ct_McKible
   "C0BM4TPUR8U": "1217040214655966", // 335 Golden Gate Ave_Belvedere
   "C0BQRF469NZ": "1217557943763917", // 303 Jester Ct_Lefebvre
-  "C0BTK94QPEY": "1218077118193878" // 6181 Cottage Ridge_Howard
+  "C0BTK94QPEY": "1218077118193878", // 6181 Cottage Ridge_Howard
+  "C08748H65AP": "1218247773564584" // 3480 Napa Rd_Jacobs
 };
 
 function verifySlackSig(req: express.Request): boolean {
