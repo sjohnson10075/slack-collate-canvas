@@ -102,7 +102,6 @@ const CHANNEL_TO_CLIENT_OPTION_GID: Record<string, string> = {
   "C0BTK94QPEY": "1218077118193878", // 6181 Cottage Ridge_Howard
   "C08748H65AP": "1218247773564584", // 3480 Napa Rd_Jacobs
   "C0BTPQL5PRQ": "1218765876761155", // 125 Belvedere Ave_Grinzewitsch
-  "C0738TZ063D": "1212624226113807", // 28 25th Ave_SF_Mulliken
   "C0718CNCHLN": "1218765876761159" // 358 Bohemian Hwy_Barker
 };
 
