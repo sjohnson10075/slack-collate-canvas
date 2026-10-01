@@ -102,7 +102,9 @@ const CHANNEL_TO_CLIENT_OPTION_GID: Record<string, string> = {
   "C0BTK94QPEY": "1218077118193878", // 6181 Cottage Ridge_Howard
   "C08748H65AP": "1218247773564584", // 3480 Napa Rd_Jacobs
   "C0BTPQL5PRQ": "1218765876761155", // 125 Belvedere Ave_Grinzewitsch
-  "C0718CNCHLN": "1218765876761159" // 358 Bohemian Hwy_Barker
+  "C0718CNCHLN": "1218765876761159", // 358 Bohemian Hwy_Barker
+  "C0C5WD0PHMG": "1219052191293058", // Ferrari SF_Corte Madera
+  "C0C5R5ZQUUV": "1219052191293054" // Ferrari SF_Mill Valley
 };
 
 function verifySlackSig(req: express.Request): boolean {
