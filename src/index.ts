@@ -104,7 +104,8 @@ const CHANNEL_TO_CLIENT_OPTION_GID: Record<string, string> = {
   "C0BTPQL5PRQ": "1218765876761155", // 125 Belvedere Ave_Grinzewitsch
   "C0718CNCHLN": "1218765876761159", // 358 Bohemian Hwy_Barker
   "C0C5WD0PHMG": "1219052191293058", // Ferrari SF_Corte Madera
-  "C0C5R5ZQUUV": "1219052191293054" // Ferrari SF_Mill Valley
+  "C0C5R5ZQUUV": "1219052191293054", // Ferrari SF_Mill Valley
+  "C0C29EPGXTP": "1219432222245290" // 12575 Wolf Run_Janese
 };
 
 function verifySlackSig(req: express.Request): boolean {
