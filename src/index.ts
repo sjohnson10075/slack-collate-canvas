@@ -536,7 +536,8 @@ const messages = await getAllThreadReplies(
     .replace(/⅛/g, "1/8")
     .replace(/⅜/g, "3/8")
     .replace(/⅝/g, "5/8")
-    .replace(/⅞/g, "7/8");
+    .replace(/⅞/g, "7/8")
+    .replace(/\u2044/g, "/");
 }
   
 function wrapSimple(
