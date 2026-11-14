@@ -303,10 +303,11 @@ const messages = await getAllThreadReplies(
     const canvasTitle = shortTitle(rootText || `Collated — ${category}`);
 
     type Group = {
-      caption: string;
-      captionEs?: string;
-      filePermalinks: string[];
-    };
+  caption: string;
+  captionEs?: string;
+  fileIds: string[];
+  priority: boolean;
+};
     const groups: Group[] = [];
 
     for (const m of messages) {
@@ -469,10 +470,18 @@ const messages = await getAllThreadReplies(
     if (res.ok && res.es) captionEs = res.es;
   }
 
+    const priority =
+    Array.isArray((m as any).reactions) &&
+    (m as any).reactions.some(
+      (reaction: any) =>
+        reaction.name === "star" && reaction.count > 0
+    );
+
   groups.push({
     caption,
     captionEs,
-    fileIds
+    fileIds,
+    priority
   });
 }
 
@@ -484,7 +493,16 @@ const messages = await getAllThreadReplies(
     });
     return;
   }
+  // Place starred messages first, preserving original order.
+  const priorityGroups = groups.filter(g => g.priority);
+  const additionalGroups = groups.filter(g => !g.priority);
 
+  groups.splice(
+    0,
+    groups.length,
+    ...priorityGroups,
+    ...additionalGroups
+  );
   // STEP 3: build PDF
   await client.chat.update({
     channel: channel_id,
@@ -763,7 +781,23 @@ function fontForStyle(style: StyledSpan["style"]) {
     return tileHMax;
   }
 }
+  // Draw a bilingual work section heading.
+  function drawSectionHeading(heading: string) {
+    const headingSize = 12;
+    const headingHeight = 30;
 
+    ensureSpace(headingHeight);
+
+    page.drawText(heading, {
+      x: margin,
+      y: y - headingSize,
+      size: headingSize,
+      font: fontBold,
+      color: rgb(0, 0, 0)
+    });
+
+    y -= headingHeight;
+  }
   // number + captions + Spanish + images
   for (let idx = 0; idx < groups.length; idx++) {
     const g = groups[idx];
@@ -797,8 +831,27 @@ function fontForStyle(style: StyledSpan["style"]) {
 
     const firstRow = g.fileIds.length ? tileHMax + 14 : 0;
 
+// Identify where each work section begins.
+const isPriorityStart = priorityGroups.length > 0 && idx === 0;
+
+const isAdditionalStart =
+  priorityGroups.length > 0 &&
+  additionalGroups.length > 0 &&
+  idx === priorityGroups.length;
+
+const sectionHeading = isPriorityStart
+  ? "PRIORITY WORK / TRABAJO PRIORITARIO"
+  : isAdditionalStart
+    ? "ADDITIONAL WORK / TRABAJO ADICIONAL"
+    : null;
+
+const headingHeight = sectionHeading ? 30 : 0;
+
+// Calculate the space required for the entire work item.
 const imageRows = Math.ceil(g.fileIds.length / 2);
+
 const totalGroupHeight =
+  headingHeight +
   capHeight +
   esHeight +
   imageRows * (tileHMax + 14) +
@@ -810,8 +863,18 @@ if (totalGroupHeight <= usablePageHeight) {
   // Keep the entire thread message together when possible.
   ensureSpace(totalGroupHeight);
 } else {
-  // At minimum, keep the captions and first image row together.
-  ensureSpace(capHeight + esHeight + firstRow);
+  // Keep captions and at least the first image row together.
+  ensureSpace(
+    headingHeight +
+    capHeight +
+    esHeight +
+    firstRow
+  );
+}
+
+// Display the section heading before its first work item.
+if (sectionHeading) {
+  drawSectionHeading(sectionHeading);
 }
 
     // English caption
@@ -872,14 +935,10 @@ if (esLines.length) {
 
 // draw images 2-up
     for (let i = 0; i < g.fileIds.length; i += 2) {
-      ensureSpace(tileHMax + 14);
-
-      const hLeft = await drawTile(margin, y, g.fileIds[i]);
-      let hRight = 0;
-      if (i + 1 < g.fileIds.length) {
-        hRight = await drawTile(margin + (contentW - gutter) / 2 + gutter, y, g.fileIds[i + 1]);
-        // NOTE: we changed x positioning here in earlier iterations; keeping consistent.
-        // But to avoid drift, let's explicitly recompute tileW each loop:
+      // The first row's space was already reserved with the captions.
+      // Only check for a new page before subsequent image rows.
+      if (i > 0) {
+        ensureSpace(tileHMax + 14);
       }
 
       const rowH = Math.max(hLeft, hRight);
