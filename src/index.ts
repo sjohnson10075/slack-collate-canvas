@@ -305,8 +305,7 @@ const messages = await getAllThreadReplies(
     type Group = {
   caption: string;
   captionEs?: string;
-  fileIds: string[];
-  priority: boolean;
+  filePermalinks: string[];
 };
     const groups: Group[] = [];
 
@@ -437,6 +436,7 @@ const messages = await getAllThreadReplies(
     caption: string;
     captionEs?: string;
     fileIds: string[];
+    priority: boolean;
   };
   const groups: Group[] = [];
 
@@ -941,12 +941,20 @@ if (esLines.length) {
         ensureSpace(tileHMax + 14);
       }
 
+      const hLeft = await drawTile(margin, y, g.fileIds[i]);
+      let hRight = 0;
+
+      if (i + 1 < g.fileIds.length) {
+        hRight = await drawTile(
+          margin + (contentW - gutter) / 2 + gutter,
+          y,
+          g.fileIds[i + 1]
+        );
+      }
+
       const rowH = Math.max(hLeft, hRight);
       y -= rowH + 14;
     }
-
-    y -= 10; // gap between groups
-  }
 
   const pdfBytes = await pdf.save();
   const bodyBuf = Buffer.from(pdfBytes);
