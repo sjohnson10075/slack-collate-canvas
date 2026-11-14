@@ -952,9 +952,12 @@ if (esLines.length) {
         );
       }
 
-      const rowH = Math.max(hLeft, hRight);
+            const rowH = Math.max(hLeft, hRight);
       y -= rowH + 14;
     }
+
+    y -= 10; // gap between groups
+  }
 
   const pdfBytes = await pdf.save();
   const bodyBuf = Buffer.from(pdfBytes);
