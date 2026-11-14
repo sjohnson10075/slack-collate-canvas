@@ -500,9 +500,9 @@ const messages = await getAllThreadReplies(
 
   const pageW = 612,
     pageH = 792;
-  const margin = 36;
+  const margin = 18;
   const contentW = pageW - margin * 2;
-  const gutter = 16;
+  const gutter = 8;
 
   const titleSize = 14;
   const captionSize = 11;
@@ -513,7 +513,7 @@ const messages = await getAllThreadReplies(
   const maxCaptionEsLines = 50;
 
   const tileW = Math.floor((contentW - gutter) / 2);
-  const tileHMax = 240;
+  const tileHMax = 260;
 
   function addPageNoHeader() {
     const p = pdf.addPage([pageW, pageH]);
@@ -796,7 +796,23 @@ function fontForStyle(style: StyledSpan["style"]) {
       : 0;
 
     const firstRow = g.fileIds.length ? tileHMax + 14 : 0;
-    ensureSpace(capHeight + esHeight + firstRow);
+
+const imageRows = Math.ceil(g.fileIds.length / 2);
+const totalGroupHeight =
+  capHeight +
+  esHeight +
+  imageRows * (tileHMax + 14) +
+  10;
+
+const usablePageHeight = pageH - margin * 2;
+
+if (totalGroupHeight <= usablePageHeight) {
+  // Keep the entire thread message together when possible.
+  ensureSpace(totalGroupHeight);
+} else {
+  // At minimum, keep the captions and first image row together.
+  ensureSpace(capHeight + esHeight + firstRow);
+}
 
     // English caption
 if (capHeight) {
