@@ -783,21 +783,45 @@ function fontForStyle(style: StyledSpan["style"]) {
 }
   // Draw a bilingual work section heading.
   function drawSectionHeading(heading: string) {
-    const headingSize = 12;
-    const headingHeight = 30;
+  const headingSize = 12;
+  const headingHeight = 30;
+  const barHeight = 24;
 
-    ensureSpace(headingHeight);
+  ensureSpace(headingHeight);
 
-    page.drawText(heading, {
-      x: margin,
-      y: y - headingSize,
-      size: headingSize,
-      font: fontBold,
-      color: rgb(0, 0, 0)
-    });
+  const isPriority = heading.startsWith("PRIORITY WORK");
 
-    y -= headingHeight;
-  }
+  // Soft gold for priority, soft blue for additional work.
+  const fillColor = isPriority
+    ? rgb(1.0, 0.94, 0.72)
+    : rgb(0.84, 0.92, 0.98);
+
+  const borderColor = isPriority
+    ? rgb(0.72, 0.59, 0.30)
+    : rgb(0.48, 0.65, 0.78);
+
+  // Shaded header bar with a subtle border.
+  page.drawRectangle({
+    x: margin,
+    y: y - barHeight,
+    width: contentW,
+    height: barHeight,
+    color: fillColor,
+    borderColor: borderColor,
+    borderWidth: 0.75
+  });
+
+  // Header text, vertically centered within the bar.
+  page.drawText(heading, {
+    x: margin + 10,
+    y: y - 16,
+    size: headingSize,
+    font: fontBold,
+    color: rgb(0, 0, 0)
+  });
+
+  y -= headingHeight;
+}
   // number + captions + Spanish + images
   for (let idx = 0; idx < groups.length; idx++) {
     const g = groups[idx];
