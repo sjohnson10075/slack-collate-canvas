@@ -211,7 +211,29 @@ async function exportPdfFromThread(
   limit: 200
 });
 
-  const messages = replies.messages || [];
+const messages = replies.messages || [];
+
+// Retrieve reactions for each individual thread reply.
+for (const m of messages) {
+  if ((m as any).ts === root_ts) continue;
+
+  try {
+    const reactionResult = await client.reactions.get({
+      channel: channel_id,
+      timestamp: (m as any).ts
+    });
+
+    (m as any).reactions =
+      (reactionResult as any).message?.reactions || [];
+  } catch (err: any) {
+    console.error(
+      "Failed to retrieve Slack reactions:",
+      (m as any).ts,
+      err?.data || err?.message || err
+    );
+  }
+}
+
 const rootText = findRootText(messages, root_ts);
 
 console.log("THREAD ROOT TEXT", {
@@ -242,6 +264,7 @@ type Group = {
   caption: string;
   captionEs?: string;
   fileIds: string[];
+  isPriority: boolean;
 };
 
 const groups: Group[] = [];
@@ -287,15 +310,32 @@ if (ADD_SPANISH && caption) {
   if (res.ok && res.es) captionEs = res.es;
 }
 
+const isPriority = ((m as any).reactions || []).some(
+  (reaction: any) => reaction.name === "star" && reaction.count > 0
+);
+
 groups.push({
   caption,
   captionEs,
-  fileIds
+  fileIds,
+  isPriority
 });
 }
   
+const priorityGroups = groups.filter(g => g.isPriority);
+const additionalGroups = groups.filter(g => !g.isPriority);
+
+groups.splice(
+  0,
+  groups.length,
+  ...priorityGroups,
+  ...additionalGroups
+);
+
 console.log("GROUPS BUILT", {
-  group_count: groups.length
+  group_count: groups.length,
+  priority_count: priorityGroups.length,
+  additional_count: additionalGroups.length
 });
 
 if (!groups.length) {
@@ -316,10 +356,10 @@ if (!groups.length) {
   const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
 
   const pageW = 612,
-    pageH = 792;
-  const margin = 36;
-  const contentW = pageW - margin * 2;
-  const gutter = 16;
+  pageH = 792;
+const margin = 18;
+const contentW = pageW - margin * 2;
+const gutter = 8;
 
   const titleSize = 14;
   const captionSize = 11;
@@ -330,7 +370,7 @@ if (!groups.length) {
   const maxCaptionEsLines = 8;
 
   const tileW = Math.floor((contentW - gutter) / 2);
-  const tileHMax = 240;
+  const tileHMax = 260;
 
   function addPageNoHeader() {
     const p = pdf.addPage([pageW, pageH]);
@@ -398,11 +438,47 @@ for (const line of titleLines) {
 y = titleY - 10;
 
   function ensureSpace(required: number) {
-    if (y - required < margin) {
-      page = addPageNoHeader();
-      y = pageH - margin;
-    }
+  if (y - required < margin) {
+    page = addPageNoHeader();
+    y = pageH - margin;
   }
+}
+
+function drawSectionHeading(
+  heading: string,
+  isPriority: boolean
+) {
+  const barHeight = 24;
+  const headingSpace = 30;
+
+  const backgroundColor = isPriority
+    ? rgb(1.0, 0.94, 0.72)
+    : rgb(0.84, 0.92, 0.98);
+
+  const borderColor = isPriority
+    ? rgb(0.72, 0.59, 0.30)
+    : rgb(0.48, 0.65, 0.78);
+
+  page.drawRectangle({
+    x: margin,
+    y: y - barHeight,
+    width: contentW,
+    height: barHeight,
+    color: backgroundColor,
+    borderColor: borderColor,
+    borderWidth: 0.75
+  });
+
+  page.drawText(heading, {
+    x: margin + 8,
+    y: y - 16,
+    size: 12,
+    font: fontBold,
+    color: rgb(0, 0, 0)
+  });
+
+  y -= headingSpace;
+}
 
 function wrapPreserveLines(
   text: string,
@@ -564,8 +640,58 @@ console.log("JPEG COMPRESS DONE", {
       ? esLines.length * lineHes + 6
       : 0;
 
-    const firstRow = g.fileIds.length ? tileHMax + 14 : 0;
-    ensureSpace(capHeight + esHeight + firstRow);
+const imageRowCount = Math.ceil(g.fileIds.length / 2);
+const firstRow = imageRowCount > 0 ? tileHMax + 14 : 0;
+
+// Reserve the full image area when the entire work item
+// can fit on one page.
+const allImageRows = imageRowCount * (tileHMax + 14);
+const totalItemHeight =
+  capHeight + esHeight + allImageRows + 10;
+
+const availablePageHeight = pageH - margin * 2;
+
+const startsSection =
+  (priorityGroups.length > 0 && idx === 0) ||
+  (priorityGroups.length > 0 &&
+    additionalGroups.length > 0 &&
+    idx === priorityGroups.length);
+
+const sectionHeight = startsSection ? 30 : 0;
+
+const requiredItemHeight =
+  totalItemHeight + sectionHeight <= availablePageHeight
+    ? totalItemHeight
+    : capHeight + esHeight + firstRow;
+    
+// Determine whether a section heading begins at this work item.
+const showPriorityHeading =
+  priorityGroups.length > 0 && idx === 0;
+
+const showAdditionalHeading =
+  priorityGroups.length > 0 &&
+  additionalGroups.length > 0 &&
+  idx === priorityGroups.length;
+
+const headingSpace =
+  showPriorityHeading || showAdditionalHeading ? 30 : 0;
+
+// Keep the heading, captions, and first image row together.
+ensureSpace(headingSpace + requiredItemHeight);
+
+if (showPriorityHeading) {
+  drawSectionHeading(
+    "PRIORITY WORK / TRABAJO PRIORITARIO",
+    true
+  );
+}
+
+if (showAdditionalHeading) {
+  drawSectionHeading(
+    "ADDITIONAL WORK / TRABAJO ADICIONAL",
+    false
+  );
+}
 
     // English caption
     if (capHeight) {
@@ -600,8 +726,13 @@ console.log("JPEG COMPRESS DONE", {
     }
 
     // draw images 2-up
-    for (let i = 0; i < g.fileIds.length; i += 2) {
-      ensureSpace(tileHMax + 14);
+for (let i = 0; i < g.fileIds.length; i += 2) {
+  // The first image row was already accounted for
+  // alongside the captions in the work-item pagination check.
+  // Only check for a new page on subsequent image rows.
+  if (i > 0) {
+    ensureSpace(tileHMax + 14);
+  }
 
       const hLeft = await drawTile(margin, y, g.fileIds[i]);
       let hRight = 0;
